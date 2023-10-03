@@ -3,6 +3,11 @@ import socket
 from decouple import config
 import psutil
 import os
+import logging
+
+def config_log() -> None:
+    logging.basicConfig(filename = "C:\\update_ip.log", level = logging.INFO,
+                    format = "%(asctime)s - %(levelname)s - %(message)s")
 
 def send_mail(new_ip:str) -> None:
     email_addr = config('GMAIL_ADDR')
@@ -69,8 +74,10 @@ def detect_ip_change(ip_file:str) -> tuple[bool, str]:
 
 if __name__ == "__main__":
     ip_file_name = "./ip_address.txt"
+    config_log()
     b_is_changed, new_ip = detect_ip_change(ip_file_name)
     if b_is_changed == True:
         send_mail(new_ip)
+        logging.info(f"ip was changed to {new_ip}")
     else:
-        print ("IP is the same")
+        logging.info("IP is the same")
