@@ -81,3 +81,4 @@ if __name__ == "__main__":
         logging.info(f"ip was changed to {new_ip}")
     else:
         logging.info("IP is the same")
+    exit()
