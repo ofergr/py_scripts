@@ -145,6 +145,7 @@ if __name__ == "__main__":
     wrong_guesses = 0
     print("Welcome to Hangman!")
 
+    #game loop
     while not game_over(wrong_guesses, target_word, guessed_letters):
         draw_hanged_man(wrong_guesses)
         print(f"Your word is: {guessed_word}")
@@ -162,4 +163,11 @@ if __name__ == "__main__":
 
         guessed_letters.add(player_guess)
         guessed_word = build_guessed_word(target_word, guessed_letters)
-    print (f"The word was \'{target_word}\'")
+
+    #game over
+    draw_hanged_man(wrong_guesses)
+    if wrong_guesses == MAX_INCORRECT_GUESSES:
+        print("Sorry, you lost!")
+    else:
+        print("Congrats! You did it!")
+    print(f"Your word was: {target_word}")
