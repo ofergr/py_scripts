@@ -256,7 +256,7 @@ def generate_html_report(earnings_data):
                         {'<span style="color: #6c757d;">Unknown</span>' if not confidence else ''}
                     </div>
                     <div style="font-size: 11px; color: #666; font-weight: 500;">
-                        EPS Forecast
+                        {f"Annual Est: ${eps_value*4:.2f}" if eps_value and eps_value > 0 else "No Target"}
                     </div>
                     <div style="font-size: 9px; color: #999;">
                         Est. Price
