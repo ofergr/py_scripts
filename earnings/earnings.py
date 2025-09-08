@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 import json
 import hashlib
 import time
+import random
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -21,6 +22,96 @@ EMAIL_CONFIG = {
     'recipients': os.getenv('RECIPIENTS', '').split(',') if os.getenv('RECIPIENTS') else [],
     'email_service': os.getenv('EMAIL_SERVICE', 'sendgrid')
 }
+
+def get_stock_price(symbol):
+    """Get last market closing price from Yahoo Finance"""
+    print(f"💰 Getting price for {symbol}...")
+    
+    try:
+        # Yahoo Finance API endpoint for quote summary
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
+                result = data['chart']['result'][0]
+                
+                # Get the regular market price (closing price)
+                if 'meta' in result and 'regularMarketPrice' in result['meta']:
+                    price = result['meta']['regularMarketPrice']
+                    print(f"✅ Got price for {symbol}: ${price:.2f}")
+                    return price
+                
+    except Exception as e:
+        print(f"❌ Price fetch error for {symbol}: {e}")
+    
+    return None
+
+def get_stock_price(symbol):
+    """Get last market closing price from Yahoo Finance"""
+    print(f"💰 Getting price for {symbol}...")
+    
+    try:
+        # Yahoo Finance API endpoint for quote summary
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            
+            if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
+                result = data['chart']['result'][0]
+                
+                # Get the regular market price (closing price)
+                if 'meta' in result and 'regularMarketPrice' in result['meta']:
+                    price = result['meta']['regularMarketPrice']
+                    print(f"✅ Got price for {symbol}: ${price:.2f}")
+                    return price
+                
+    except Exception as e:
+        print(f"❌ Price fetch error for {symbol}: {e}")
+    
+    return None
+
+def get_news_link(symbol, company_name):
+    """Generate smart news search links - this will ALWAYS work"""
+    print(f"📰 Creating news link for {symbol}...")
+    
+    # Different link options for variety
+    link_options = [
+        f"Recent {symbol} earnings & stock news",
+        f"Latest {symbol} financial reports",
+        f"{symbol} stock analysis & updates",
+        f"{symbol} investor news & insights"
+    ]
+    
+    # Different URL options
+    url_options = [
+        f"https://www.google.com/search?q={symbol}+earnings+news&tbm=nws&tbs=qdr:w",
+        f"https://finance.yahoo.com/quote/{symbol}/news/",
+        f"https://www.marketwatch.com/investing/stock/{symbol.lower()}",
+        f"https://seekingalpha.com/symbol/{symbol}/news"
+    ]
+    
+    # Pick random combination
+    summary = random.choice(link_options)
+    url = random.choice(url_options)
+    
+    print(f"✅ Created news link for {symbol}: {summary[:30]}...")
+    
+    return {
+        "summary": summary,
+        "url": url,
+        "title": summary
+    }
 
 def get_analyst_recommendation_eps_based(symbol, eps, company_name):
     """Generate analyst recommendation based on EPS with realistic analyst counts"""
@@ -80,7 +171,7 @@ def get_analyst_recommendation_eps_based(symbol, eps, company_name):
         }
 
 def get_nasdaq_earnings():
-    """Get company earnings from NASDAQ with analyst recommendations"""
+    """Get company earnings from NASDAQ with analyst recommendations and news"""
     print("📊 Fetching earnings from NASDAQ...")
     
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
@@ -97,7 +188,7 @@ def get_nasdaq_earnings():
             
             earnings_data = []
             if 'data' in data and 'rows' in data['data']:
-                print(f"🔍 Found {len(data['data']['rows'])} companies, generating recommendations...")
+                print(f"🔍 Found {len(data['data']['rows'])} companies, generating recommendations and news links...")
                 
                 for i, row in enumerate(data['data']['rows']):
                     symbol = row.get('symbol', 'N/A')
@@ -117,11 +208,20 @@ def get_nasdaq_earnings():
                     print(f"📈 Getting recommendation for {symbol} ({i+1}/{len(data['data']['rows'])})")
                     analyst_data = get_analyst_recommendation_eps_based(symbol, eps_parsed, company_name)
                     
-                    # Debug output
+                    # Get stock price (all companies)
+                    stock_price = get_stock_price(symbol)
+                    
+                    # Get news link - this will ALWAYS work
+                    news_data = get_news_link(symbol, company_name)
+                    
+                    # Debug output with all cell values
                     rec = analyst_data.get('recommendation', 'N/A')
                     analysts = analyst_data.get('total_analysts', 'N/A')
                     confidence = analyst_data.get('confidence', 'N/A')
-                    print(f"✅ {symbol}: {rec} ({analysts} analysts, {confidence} confidence)")
+                    news_summary = news_data.get('summary', 'News link created')
+                    price_str = f"${stock_price:.2f}" if stock_price else "N/A"
+                    
+                    print(f"✅ {symbol}: Price={price_str} | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Rec={rec} | Conf={confidence} | News={news_summary[:20]}...")
                     
                     earnings_data.append({
                         'symbol': symbol,
@@ -129,10 +229,12 @@ def get_nasdaq_earnings():
                         'time': row.get('time', 'time-not-supplied'),
                         'eps': eps_parsed,
                         'eps_raw': eps_value,
-                        'analyst_data': analyst_data
+                        'analyst_data': analyst_data,
+                        'news': news_data,
+                        'stock_price': stock_price
                     })
                     
-                    # Small delay to be respectful
+                    # Small delay
                     time.sleep(0.1)
             
             return earnings_data
@@ -142,7 +244,7 @@ def get_nasdaq_earnings():
         return []
 
 def generate_html_report(earnings_data):
-    """Generate HTML email report with analyst recommendations"""
+    """Generate HTML email report with analyst recommendations and news"""
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%A, %B %d, %Y')
     
     # Calculate statistics
@@ -167,6 +269,12 @@ def generate_html_report(earnings_data):
         company_name = company.get('company', 'N/A')
         time_value = company.get('time', 'time-not-supplied')
         eps_value = company.get('eps')
+        news_data = company.get('news', {})
+        stock_price = company.get('stock_price')
+        
+        # Format stock price
+        price_display = f"${stock_price:.2f}" if stock_price else "N/A"
+        price_color = "#333"
         
         # Format EPS display
         eps_display = f"${eps_value:.2f}" if eps_value is not None else "N/A"
@@ -174,8 +282,8 @@ def generate_html_report(earnings_data):
         
         # Format timing
         time_display = {
-            'time-pre-market': 'Pre-Market',
-            'time-after-hours': 'After Hours',
+            'time-pre-market': 'Pre',
+            'time-after-hours': 'After',
             'time-not-supplied': 'TBD'
         }.get(time_value, 'TBD')
         
@@ -212,57 +320,30 @@ def generate_html_report(earnings_data):
             rec_icon = "💥"
             rec_color = "#dc3545"
         
-        # Format source info
-        source_info = ""
-        if source == 'EPS-based':
-            source_info = "EPS Model"
-        elif source == 'Estimated':
-            source_info = "Estimated"
+        # Format news data - ensure we have valid values
+        news_summary = news_data.get('summary', 'Search latest news')
+        news_url = news_data.get('url', f"https://www.google.com/search?q={symbol}+stock+news&tbm=nws")
+        
+        # Ensure all variables have safe values
+        symbol_safe = symbol or 'N/A'
+        company_safe = company_name[:20] + "..." if company_name and len(company_name) > 20 else (company_name or 'N/A')
+        time_safe = time_display or 'TBD'
+        price_safe = price_display or 'N/A'
+        eps_safe = eps_display or 'N/A'
+        rec_safe = f"{rec_icon} {recommendation}" if recommendation else 'N/A'
+        conf_safe = confidence if confidence else 'N/A'
+        news_safe = f'<a href="{news_url}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 11px;">{news_summary[:30]}...</a>'
         
         company_rows += f"""
         <tr style="border-bottom: 1px solid #e9ecef;">
-            <td style="padding: 12px; font-weight: bold; font-size: 16px; width: 8%;">{symbol}</td>
-            <td style="padding: 12px; width: 30%;">
-                <div style="color: #333; font-weight: 500; font-size: 14px; line-height: 1.3;">{company_name[:40]}...</div>
-            </td>
-            <td style="padding: 12px; text-align: center; width: 12%;">
-                <span style="background-color: {time_color}20; color: {time_color}; padding: 4px 8px; border-radius: 12px; font-size: 11px; font-weight: bold;">
-                    {time_display}
-                </span>
-            </td>
-            <td style="padding: 12px; text-align: center; width: 12%;">
-                <span style="font-weight: bold; color: {eps_color}; font-size: 16px;">{eps_display}</span>
-            </td>
-            <td style="padding: 12px; text-align: center; width: 20%;">
-                <div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">
-                    <div style="display: flex; align-items: center; gap: 6px;">
-                        <span style="font-size: 18px;">{rec_icon}</span>
-                        <span style="font-weight: bold; color: {rec_color}; font-size: 13px;">{recommendation}</span>
-                    </div>
-                    <div style="font-size: 11px; color: #666; font-weight: 600;">
-                        {total_analysts} analysts
-                    </div>
-                    <div style="font-size: 10px; color: #999; font-style: italic;">
-                        {source_info}
-                    </div>
-                </div>
-            </td>
-            <td style="padding: 12px; text-align: center; width: 18%;">
-                <div style="display: flex; flex-direction: column; align-items: center; gap: 3px;">
-                    <div style="font-size: 12px; font-weight: 600; margin-bottom: 2px;">
-                        {'<span style="color: #28a745;">High Confidence</span>' if confidence == 'High' else ''}
-                        {'<span style="color: #ffc107;">Medium Confidence</span>' if confidence == 'Medium' else ''}
-                        {'<span style="color: #dc3545;">Low Confidence</span>' if confidence == 'Low' else ''}
-                        {'<span style="color: #6c757d;">Unknown</span>' if not confidence else ''}
-                    </div>
-                    <div style="font-size: 11px; color: #666; font-weight: 500;">
-                        {f"Annual Est: ${eps_value*4:.2f}" if eps_value and eps_value > 0 else "No Target"}
-                    </div>
-                    <div style="font-size: 9px; color: #999;">
-                        Est. Price
-                    </div>
-                </div>
-            </td>
+            <td style="padding: 8px; width: 6%;">{symbol_safe}</td>
+            <td style="padding: 8px; width: 18%;">{company_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 11%;">{time_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 8%;">{price_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 6%;">{eps_safe}</td>
+            <td style="padding: 8px; width: 14%;">{rec_safe}</td>
+            <td style="padding: 8px; width: 15%;">{conf_safe}</td>
+            <td style="padding: 8px; width: 22%;">{news_safe}</td>
         </tr>
         """
     
@@ -298,7 +379,7 @@ def generate_html_report(earnings_data):
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Earnings Report</title>
     </head>
-    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 900px; margin: 0 auto; background-color: #f8f9fa;">
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1100px; margin: 0 auto; background-color: #f8f9fa;">
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px; text-align: center; color: white;">
             <h1 style="margin: 0; font-size: 42px; font-weight: bold;">📊 EARNINGS CALENDAR</h1>
             <p style="margin: 15px 0 0 0; font-size: 20px; opacity: 0.9;">{tomorrow}</p>
@@ -338,12 +419,14 @@ def generate_html_report(earnings_data):
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
                         <tr style="background: #f8f9fa;">
-                            <th style="padding: 15px; text-align: left; font-weight: bold; color: #333; font-size: 13px;">Symbol</th>
-                            <th style="padding: 15px; text-align: left; font-weight: bold; color: #333; font-size: 13px;">Company</th>
-                            <th style="padding: 15px; text-align: center; font-weight: bold; color: #333; font-size: 13px;">Timing</th>
-                            <th style="padding: 15px; text-align: center; font-weight: bold; color: #333; font-size: 13px;">EPS Est.</th>
-                            <th style="padding: 15px; text-align: center; font-weight: bold; color: #333; font-size: 13px;">Recommendation<br><span style="font-size: 10px; font-weight: normal; color: #666;">(Analysts)</span></th>
-                            <th style="padding: 15px; text-align: center; font-weight: bold; color: #333; font-size: 13px;">Analysis<br><span style="font-size: 10px; font-weight: normal; color: #666;">(Confidence)</span></th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 6%;">Symbol</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 18%;">Company</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 11%;">Time</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 8%;">Price</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 6%;">EPS</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 14%;">Rating</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 15%;">Confidence</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 22%;">News</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -364,7 +447,8 @@ def generate_html_report(earnings_data):
                     <div><span style="font-size: 18px;">❓</span> No Data Available</div>
                 </div>
                 <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                    * Recommendations based on EPS analysis and simulated analyst coverage
+                    * Recommendations based on EPS analysis and simulated analyst coverage<br>
+                    * News links direct to financial news sources for each stock
                 </div>
             </div>
             
@@ -477,7 +561,7 @@ def validate_config():
 
 def main():
     """Main function for cron job"""
-    print("🔍 Starting earnings email system...")
+    print("🔍 Starting earnings email system with news links...")
     
     # Validate configuration
     if not validate_config():
@@ -497,7 +581,7 @@ def main():
     
     # Generate HTML report
     html_report = generate_html_report(earnings_data)
-    subject = f"📊 Daily Earnings Report - {len(earnings_data)} Companies - {tomorrow_date}"
+    subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {tomorrow_date}"
     
     # Send email based on configured service
     service = EMAIL_CONFIG['email_service']
