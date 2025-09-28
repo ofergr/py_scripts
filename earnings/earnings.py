@@ -562,20 +562,31 @@ def validate_config():
 
 def main():
     """Main function for cron job"""
-    print("🔍 Starting earnings email system with news links...")
     
-    # Validate configuration
     if not validate_config():
         return
     
     tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    print(f"📅 Fetching earnings for {tomorrow_date}")
     
-    # Get earnings data
     earnings_data = get_nasdaq_earnings()
     
     if not earnings_data:
-        print("❌ No earnings data found - not sending email")
         return
     
-    print(f"✅ Found {len(
+    html_report = generate_html_report(earnings_data)
+    subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {tomorrow_date}"
+    
+    service = EMAIL_CONFIG['email_service']
+    success = False
+    
+    if service == 'sendgrid':
+        success = send_email_sendgrid(subject, html_report, EMAIL_CONFIG['recipients'])
+    else:
+        success = save_to_file(subject, html_report)
+    
+    if not success and service != 'file':
+        save_to_file(subject, html_report)
+
+if __name__ == "__main__":
+    main()
+    
