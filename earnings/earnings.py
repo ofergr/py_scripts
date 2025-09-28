@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+# -*- coding: utf-8 -*-
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
 
@@ -23,34 +23,20 @@ EMAIL_CONFIG = {
     'email_service': os.getenv('EMAIL_SERVICE', 'sendgrid')
 }
 
-def get_stock_price(symbol):
-    """Get last market closing price from Yahoo Finance"""
-    print(f"💰 Getting price for {symbol}...")
-    
-    try:
-        # Yahoo Finance API endpoint for quote summary
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            data = response.json()
-            
-            if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
-                result = data['chart']['result'][0]
-                
-                # Get the regular market price (closing price)
-                if 'meta' in result and 'regularMarketPrice' in result['meta']:
-                    price = result['meta']['regularMarketPrice']
-                    print(f"✅ Got price for {symbol}: ${price:.2f}")
-                    return price
-                
-    except Exception as e:
-        print(f"❌ Price fetch error for {symbol}: {e}")
-    
-    return None
+# RECOMMENDATION SORTING WEIGHTS
+recommendation_weights = {
+    "Strong Buy": 1,
+    "Buy": 2,
+    "Hold": 3,
+    "Sell": 4,
+    "Strong Sell": 5,
+}
+
+def get_recommendation_weight(company_data):
+    """Extract recommendation weight for sorting"""
+    analyst_data = company_data.get('analyst_data', {})
+    recommendation = analyst_data.get('recommendation', '')
+    return recommendation_weights.get(recommendation, float('inf'))
 
 def get_stock_price(symbol):
     """Get last market closing price from Yahoo Finance"""
@@ -237,6 +223,17 @@ def get_nasdaq_earnings():
                     # Small delay
                     time.sleep(0.1)
             
+            # SORT BY RECOMMENDATION PRIORITY
+            print("🔄 Sorting companies by recommendation priority...")
+            earnings_data.sort(key=get_recommendation_weight)
+            
+            # Print sorted order for verification
+            print("📋 Sorted order:")
+            for i, company in enumerate(earnings_data):
+                rec = company['analyst_data']['recommendation']
+                weight = get_recommendation_weight(company)
+                print(f"  {i+1}. {company['symbol']} - {rec} (weight: {weight})")
+            
             return earnings_data
             
     except Exception as e:
@@ -262,7 +259,7 @@ def generate_html_report(earnings_data):
     loss_companies = [e for e in earnings_data if e.get('eps') and e.get('eps') < 0]
     biggest_loss = min(loss_companies, key=lambda x: x.get('eps', 0)) if loss_companies else None
     
-    # Generate company rows
+    # Generate company rows (already sorted by recommendation)
     company_rows = ""
     for company in earnings_data:
         symbol = company.get('symbol', 'N/A')
@@ -386,6 +383,9 @@ def generate_html_report(earnings_data):
             <div style="background: rgba(255,255,255,0.2); padding: 15px 25px; border-radius: 25px; display: inline-block; margin-top: 20px;">
                 <span style="font-weight: bold; font-size: 20px;">🏢 {total_companies} Companies Reporting</span>
             </div>
+            <div style="background: rgba(255,255,255,0.15); padding: 10px 20px; border-radius: 20px; display: inline-block; margin-top: 15px;">
+                <span style="font-size: 16px;">📈 Sorted by Recommendation Priority</span>
+            </div>
         </div>
         
         <div style="padding: 40px; background: white;">
@@ -414,7 +414,7 @@ def generate_html_report(earnings_data):
             <!-- Companies Table -->
             <div style="background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 8px 25px rgba(0,0,0,0.1); border: 1px solid #e9ecef;">
                 <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 25px;">
-                    <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow</h2>
+                    <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow (Sorted by Rating)</h2>
                 </div>
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
@@ -448,7 +448,8 @@ def generate_html_report(earnings_data):
                 </div>
                 <div style="margin-top: 10px; font-size: 12px; color: #666;">
                     * Recommendations based on EPS analysis and simulated analyst coverage<br>
-                    * News links direct to financial news sources for each stock
+                    * News links direct to financial news sources for each stock<br>
+                    * Companies are sorted by recommendation priority (Strong Buy first, Strong Sell last)
                 </div>
             </div>
             
@@ -577,27 +578,4 @@ def main():
         print("❌ No earnings data found - not sending email")
         return
     
-    print(f"✅ Found {len(earnings_data)} companies with earnings")
-    
-    # Generate HTML report
-    html_report = generate_html_report(earnings_data)
-    subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {tomorrow_date}"
-    
-    # Send email based on configured service
-    service = EMAIL_CONFIG['email_service']
-    success = False
-    
-    if service == 'sendgrid':
-        print("📧 Sending via SendGrid...")
-        success = send_email_sendgrid(subject, html_report, EMAIL_CONFIG['recipients'])
-    else:
-        print("💾 Saving to file...")
-        success = save_to_file(subject, html_report)
-    
-    # Fallback to file if email fails
-    if not success and service != 'file':
-        print("📄 Email failed, saving to file as fallback...")
-        save_to_file(subject, html_report)
-
-if __name__ == "__main__":
-    main()
+    print(f"✅ Found {len(
