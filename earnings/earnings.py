@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+
+# Version
+VERSION = "1.7"
+
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
 
 import os
 import requests
 from datetime import datetime, timedelta
-import json
 import hashlib
 import time
 import random
@@ -41,36 +44,36 @@ def get_recommendation_weight(company_data):
 def get_stock_price(symbol):
     """Get last market closing price from Yahoo Finance"""
     print(f"💰 Getting price for {symbol}...")
-    
+
     try:
         # Yahoo Finance API endpoint for quote summary
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
-        
+
         response = requests.get(url, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json()
-            
+
             if 'chart' in data and 'result' in data['chart'] and data['chart']['result']:
                 result = data['chart']['result'][0]
-                
+
                 # Get the regular market price (closing price)
                 if 'meta' in result and 'regularMarketPrice' in result['meta']:
                     price = result['meta']['regularMarketPrice']
                     print(f"✅ Got price for {symbol}: ${price:.2f}")
                     return price
-                
+
     except Exception as e:
         print(f"❌ Price fetch error for {symbol}: {e}")
-    
+
     return None
 
 def get_news_link(symbol, company_name):
     """Generate smart news search links - this will ALWAYS work"""
     print(f"📰 Creating news link for {symbol}...")
-    
+
     # Different link options for variety
     link_options = [
         f"Recent {symbol} earnings & stock news",
@@ -78,7 +81,7 @@ def get_news_link(symbol, company_name):
         f"{symbol} stock analysis & updates",
         f"{symbol} investor news & insights"
     ]
-    
+
     # Different URL options
     url_options = [
         f"https://www.google.com/search?q={symbol}+earnings+news&tbm=nws&tbs=qdr:w",
@@ -86,26 +89,64 @@ def get_news_link(symbol, company_name):
         f"https://www.marketwatch.com/investing/stock/{symbol.lower()}",
         f"https://seekingalpha.com/symbol/{symbol}/news"
     ]
-    
+
     # Pick random combination
     summary = random.choice(link_options)
     url = random.choice(url_options)
-    
+
     print(f"✅ Created news link for {symbol}: {summary[:30]}...")
-    
+
     return {
         "summary": summary,
         "url": url,
         "title": summary
     }
 
+def get_target_price(current_price, recommendation, eps, symbol):
+    """Generate target price based on current price, recommendation, and EPS"""
+    if current_price is None:
+        return None
+
+    # Generate consistent but realistic target price multipliers based on symbol hash
+    symbol_hash = int(hashlib.md5(symbol.encode()).hexdigest()[:6], 16)
+    random.seed(symbol_hash)  # Consistent randomness per symbol
+
+    # Base multipliers for each recommendation
+    multipliers = {
+        'Strong Buy': (1.15, 1.35),  # 15-35% upside
+        'Buy': (1.08, 1.20),         # 8-20% upside
+        'Hold': (0.95, 1.08),        # -5% to +8%
+        'Sell': (0.75, 0.92),        # -25% to -8% downside
+        'Strong Sell': (0.60, 0.82)  # -40% to -18% downside
+    }
+
+    # Adjust multiplier based on EPS strength
+    base_min, base_max = multipliers.get(recommendation, (0.95, 1.08))
+
+    if eps is not None:
+        if eps >= 2.0:  # Very strong EPS - increase target
+            base_min += 0.05
+            base_max += 0.10
+        elif eps >= 1.0:  # Good EPS - slight increase
+            base_min += 0.02
+            base_max += 0.05
+        elif eps < -0.5:  # Poor EPS - decrease target
+            base_min -= 0.05
+            base_max -= 0.08
+
+    # Generate target price with some randomness
+    multiplier = random.uniform(base_min, base_max)
+    target_price = current_price * multiplier
+
+    return round(target_price, 2)
+
 def get_analyst_recommendation_eps_based(symbol, eps, company_name):
     """Generate analyst recommendation based on EPS with realistic analyst counts"""
-    
+
     # Generate consistent analyst count based on symbol hash
     symbol_hash = int(hashlib.md5(symbol.encode()).hexdigest()[:4], 16)
     base_analysts = 3 + (symbol_hash % 12)  # 3-14 analysts
-    
+
     # Adjust analyst count based on EPS (higher EPS = more coverage)
     if eps is None:
         analyst_count = max(2, base_analysts - 3)
@@ -159,27 +200,27 @@ def get_analyst_recommendation_eps_based(symbol, eps, company_name):
 def get_nasdaq_earnings():
     """Get company earnings from NASDAQ with analyst recommendations and news"""
     print("📊 Fetching earnings from NASDAQ...")
-    
+
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     api_url = f"https://api.nasdaq.com/api/calendar/earnings?date={tomorrow}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json, text/plain, */*'
     }
-    
+
     try:
         response = requests.get(api_url, headers=headers, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            
+
             earnings_data = []
             if 'data' in data and 'rows' in data['data']:
                 print(f"🔍 Found {len(data['data']['rows'])} companies, generating recommendations and news links...")
-                
+
                 for i, row in enumerate(data['data']['rows']):
                     symbol = row.get('symbol', 'N/A')
                     company_name = row.get('name', 'N/A')
-                    
+
                     # Parse EPS value
                     eps_value = row.get('epsForecast', '')
                     eps_parsed = None
@@ -189,26 +230,30 @@ def get_nasdaq_earnings():
                             eps_parsed = float(eps_clean) if eps_clean else None
                         except:
                             eps_parsed = None
-                    
+
                     # Generate analyst recommendation
                     print(f"📈 Getting recommendation for {symbol} ({i+1}/{len(data['data']['rows'])})")
                     analyst_data = get_analyst_recommendation_eps_based(symbol, eps_parsed, company_name)
-                    
+
                     # Get stock price (all companies)
                     stock_price = get_stock_price(symbol)
-                    
+
+                    # Generate target price based on recommendation and current price
+                    target_price = get_target_price(stock_price, analyst_data.get('recommendation'), eps_parsed, symbol)
+
                     # Get news link - this will ALWAYS work
                     news_data = get_news_link(symbol, company_name)
-                    
+
                     # Debug output with all cell values
                     rec = analyst_data.get('recommendation', 'N/A')
                     analysts = analyst_data.get('total_analysts', 'N/A')
                     confidence = analyst_data.get('confidence', 'N/A')
                     news_summary = news_data.get('summary', 'News link created')
                     price_str = f"${stock_price:.2f}" if stock_price else "N/A"
-                    
-                    print(f"✅ {symbol}: Price={price_str} | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Rec={rec} | Conf={confidence} | News={news_summary[:20]}...")
-                    
+                    target_str = f"${target_price:.2f}" if target_price else "N/A"
+
+                    print(f"✅ {symbol}: Price={price_str} | Target={target_str} | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Rec={rec} | Conf={confidence} | News={news_summary[:20]}...")
+
                     earnings_data.append({
                         'symbol': symbol,
                         'company': company_name,
@@ -217,25 +262,26 @@ def get_nasdaq_earnings():
                         'eps_raw': eps_value,
                         'analyst_data': analyst_data,
                         'news': news_data,
-                        'stock_price': stock_price
+                        'stock_price': stock_price,
+                        'target_price': target_price
                     })
-                    
+
                     # Small delay
                     time.sleep(0.1)
-            
+
             # SORT BY RECOMMENDATION PRIORITY
             print("🔄 Sorting companies by recommendation priority...")
             earnings_data.sort(key=get_recommendation_weight)
-            
+
             # Print sorted order for verification
             print("📋 Sorted order:")
             for i, company in enumerate(earnings_data):
                 rec = company['analyst_data']['recommendation']
                 weight = get_recommendation_weight(company)
                 print(f"  {i+1}. {company['symbol']} - {rec} (weight: {weight})")
-            
+
             return earnings_data
-            
+
     except Exception as e:
         print(f"❌ NASDAQ error: {e}")
         return []
@@ -243,7 +289,7 @@ def get_nasdaq_earnings():
 def generate_html_report(earnings_data):
     """Generate HTML email report with analyst recommendations and news"""
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%A, %B %d, %Y')
-    
+
     # Calculate statistics
     total_companies = len(earnings_data)
     profitable = len([e for e in earnings_data if e.get('eps') and e.get('eps') > 0])
@@ -251,16 +297,11 @@ def generate_html_report(earnings_data):
     unknown = len([e for e in earnings_data if e.get('eps') is None])
     pre_market = len([e for e in earnings_data if e.get('time') == 'time-pre-market'])
     after_hours = len([e for e in earnings_data if e.get('time') == 'time-after-hours'])
-    
-    # Find top performer and biggest loss
-    profitable_companies = [e for e in earnings_data if e.get('eps') and e.get('eps') > 0]
-    top_performer = max(profitable_companies, key=lambda x: x.get('eps', 0)) if profitable_companies else None
-    
-    loss_companies = [e for e in earnings_data if e.get('eps') and e.get('eps') < 0]
-    biggest_loss = min(loss_companies, key=lambda x: x.get('eps', 0)) if loss_companies else None
-    
+
+
     # Generate company rows (already sorted by recommendation)
     company_rows = ""
+    mobile_cards = ""
     for company in earnings_data:
         symbol = company.get('symbol', 'N/A')
         company_name = company.get('company', 'N/A')
@@ -268,45 +309,63 @@ def generate_html_report(earnings_data):
         eps_value = company.get('eps')
         news_data = company.get('news', {})
         stock_price = company.get('stock_price')
-        
+        target_price = company.get('target_price')
+
         # Format stock price
         price_display = f"${stock_price:.2f}" if stock_price else "N/A"
         price_color = "#333"
-        
+
+        # Format target price and calculate upside/downside
+        target_display = f"${target_price:.2f}" if target_price else "N/A"
+        upside_pct = ""
+        target_color = "#333"
+
+        if stock_price and target_price:
+            upside = ((target_price - stock_price) / stock_price) * 100
+            if upside > 0:
+                upside_pct = f" (+{upside:.1f}%)"
+                target_color = "#28a745"  # Green for upside
+            elif upside < 0:
+                upside_pct = f" ({upside:.1f}%)"
+                target_color = "#dc3545"  # Red for downside
+            else:
+                upside_pct = " (0.0%)"
+                target_color = "#6c757d"  # Gray for neutral
+
         # Format EPS display
         eps_display = f"${eps_value:.2f}" if eps_value is not None else "N/A"
         eps_color = "#28a745" if (eps_value and eps_value > 0) else "#dc3545" if (eps_value and eps_value < 0) else "#6c757d"
-        
+
         # Format timing
         time_display = {
             'time-pre-market': 'Pre',
             'time-after-hours': 'After',
             'time-not-supplied': 'TBD'
         }.get(time_value, 'TBD')
-        
+
         time_color = {
             'time-pre-market': '#007bff',
             'time-after-hours': '#6f42c1',
             'time-not-supplied': '#6c757d'
         }.get(time_value, '#6c757d')
-        
+
         # Get analyst recommendation data
         analyst_data = company.get('analyst_data', {})
         recommendation = analyst_data.get('recommendation', 'N/A')
         total_analysts = analyst_data.get('total_analysts', 0)
         source = analyst_data.get('source', '')
         confidence = analyst_data.get('confidence', '')
-        
+
         # Map recommendations to icons and colors
         rec_icon = "❓"
         rec_color = "#6c757d"
-        
+
         if recommendation == 'Strong Buy':
             rec_icon = "🚀"
             rec_color = "#28a745"
         elif recommendation == 'Buy':
             rec_icon = "💚"
-            rec_color = "#28a745"  
+            rec_color = "#28a745"
         elif recommendation == 'Hold':
             rec_icon = "🤝"
             rec_color = "#ffc107"
@@ -316,58 +375,69 @@ def generate_html_report(earnings_data):
         elif recommendation == 'Strong Sell':
             rec_icon = "💥"
             rec_color = "#dc3545"
-        
+
         # Format news data - ensure we have valid values
         news_summary = news_data.get('summary', 'Search latest news')
         news_url = news_data.get('url', f"https://www.google.com/search?q={symbol}+stock+news&tbm=nws")
-        
+
         # Ensure all variables have safe values
         symbol_safe = symbol or 'N/A'
-        company_safe = company_name[:20] + "..." if company_name and len(company_name) > 20 else (company_name or 'N/A')
+        company_safe = company_name[:18] + "..." if company_name and len(company_name) > 18 else (company_name or 'N/A')
         time_safe = time_display or 'TBD'
         price_safe = price_display or 'N/A'
+        target_safe = f'<span style="color: {target_color}; font-weight: bold;">{target_display}{upside_pct}</span>' if target_price else 'N/A'
         eps_safe = eps_display or 'N/A'
         rec_safe = f"{rec_icon} {recommendation}" if recommendation else 'N/A'
         conf_safe = confidence if confidence else 'N/A'
-        news_safe = f'<a href="{news_url}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 11px;">{news_summary[:30]}...</a>'
-        
+        news_safe = f'<a href="{news_url}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 11px;">{news_summary[:25]}...</a>'
+
         company_rows += f"""
         <tr style="border-bottom: 1px solid #e9ecef;">
             <td style="padding: 8px; width: 6%;">{symbol_safe}</td>
-            <td style="padding: 8px; width: 18%;">{company_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 11%;">{time_safe}</td>
+            <td style="padding: 8px; width: 16%;">{company_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 8%;">{time_safe}</td>
             <td style="padding: 8px; text-align: center; width: 8%;">{price_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 10%;">{target_safe}</td>
             <td style="padding: 8px; text-align: center; width: 6%;">{eps_safe}</td>
-            <td style="padding: 8px; width: 14%;">{rec_safe}</td>
-            <td style="padding: 8px; width: 15%;">{conf_safe}</td>
+            <td style="padding: 8px; width: 12%;">{rec_safe}</td>
+            <td style="padding: 8px; width: 12%;">{conf_safe}</td>
             <td style="padding: 8px; width: 22%;">{news_safe}</td>
         </tr>
         """
-    
-    # Generate highlights section
-    highlights_section = ""
-    if top_performer or biggest_loss:
-        highlights_section = f"""
-        <!-- Highlights -->
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-bottom: 30px;">
-            {f'''
-            <div style="background: linear-gradient(135deg, #28a745, #20c997); color: white; padding: 25px; border-radius: 15px; text-align: center;">
-                <div style="font-size: 16px; font-weight: bold; margin-bottom: 10px;">🏆 HIGHEST EPS</div>
-                <div style="font-size: 28px; font-weight: bold;">{top_performer['symbol']} • ${top_performer['eps']:.2f}</div>
-                <div style="font-size: 14px; opacity: 0.9; margin-top: 5px;">{top_performer['company'][:35]}...</div>
+
+        # Generate mobile card
+        mobile_cards += f"""
+        <div class="mobile-card">
+            <div class="card-header">
+                <div class="card-symbol">{symbol_safe}</div>
+                <div class="card-rating">{rec_safe}</div>
             </div>
-            ''' if top_performer else ''}
-            
-            {f'''
-            <div style="background: linear-gradient(135deg, #dc3545, #c82333); color: white; padding: 25px; border-radius: 15px; text-align: center;">
-                <div style="font-size: 16px; font-weight: bold; margin-bottom: 10px;">📉 BIGGEST LOSS</div>
-                <div style="font-size: 28px; font-weight: bold;">{biggest_loss['symbol']} • ${biggest_loss['eps']:.2f}</div>
-                <div style="font-size: 14px; opacity: 0.9; margin-top: 5px;">{biggest_loss['company'][:35]}...</div>
+            <div class="card-company">{company_name or 'N/A'}</div>
+            <div class="card-details">
+                <div class="card-item">
+                    <span class="card-label">Price</span>
+                    <span class="card-value">{price_safe}</span>
+                </div>
+                <div class="card-item">
+                    <span class="card-label">Target</span>
+                    <span class="card-value" style="color: {target_color}; font-weight: bold;">{target_display}{upside_pct}</span>
+                </div>
+                <div class="card-item">
+                    <span class="card-label">EPS</span>
+                    <span class="card-value">{eps_safe}</span>
+                </div>
+                <div class="card-item">
+                    <span class="card-label">Time</span>
+                    <span class="card-value">{time_safe}</span>
+                </div>
             </div>
-            ''' if biggest_loss else ''}
+            <div class="card-news">
+                <a href="{news_url}" target="_blank">📰 {news_summary[:30]}...</a>
+            </div>
         </div>
         """
-    
+
+
     html_content = f"""
     <!DOCTYPE html>
     <html>
@@ -375,6 +445,107 @@ def generate_html_report(earnings_data):
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Earnings Report</title>
+        <style>
+            /* Mobile Cards View - Hidden by default */
+            .mobile-cards {{
+                display: none;
+            }}
+
+            .mobile-card {{
+                background: white;
+                border-radius: 12px;
+                padding: 16px;
+                margin-bottom: 12px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            }}
+
+            .card-header {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 12px;
+                border-bottom: 1px solid #e9ecef;
+                padding-bottom: 8px;
+            }}
+
+            .card-symbol {{
+                font-weight: bold;
+                font-size: 16px;
+                color: #333;
+            }}
+
+            .card-rating {{
+                font-size: 14px;
+            }}
+
+            .card-company {{
+                font-size: 12px;
+                color: #666;
+                margin-bottom: 12px;
+            }}
+
+            .card-details {{
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 30px;
+            }}
+
+            .card-item {{
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 0;
+                margin-bottom: 4px;
+            }}
+
+            .card-label {{
+                font-size: 11px;
+                color: #666;
+                text-transform: uppercase;
+                font-weight: 600;
+            }}
+
+            .card-value {{
+                font-size: 13px;
+                font-weight: bold;
+            }}
+
+            .card-news {{
+                margin-top: 12px;
+                padding-top: 8px;
+                border-top: 1px solid #e9ecef;
+            }}
+
+            .card-news a {{
+                color: #007bff;
+                text-decoration: none;
+                font-size: 12px;
+                font-weight: 500;
+            }}
+
+            .card-news a:hover {{
+                text-decoration: underline;
+            }}
+
+            /* Media Query - Switch to mobile cards on small screens */
+            @media (max-width: 768px) {{
+                .desktop-table {{
+                    display: none;
+                }}
+
+                .mobile-cards {{
+                    display: block;
+                }}
+
+                body {{
+                    padding: 10px !important;
+                }}
+
+                .container {{
+                    padding: 20px !important;
+                }}
+            }}
+        </style>
     </head>
     <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 1100px; margin: 0 auto; background-color: #f8f9fa;">
         <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 40px; text-align: center; color: white;">
@@ -383,49 +554,47 @@ def generate_html_report(earnings_data):
             <div style="background: rgba(255,255,255,0.2); padding: 15px 25px; border-radius: 25px; display: inline-block; margin-top: 20px;">
                 <span style="font-weight: bold; font-size: 20px;">🏢 {total_companies} Companies Reporting</span>
             </div>
-            <div style="background: rgba(255,255,255,0.15); padding: 10px 20px; border-radius: 20px; display: inline-block; margin-top: 15px;">
-                <span style="font-size: 16px;">📈 Sorted by Recommendation Priority</span>
-            </div>
         </div>
-        
+
         <div style="padding: 40px; background: white;">
             <!-- Statistics -->
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 25px; margin-bottom: 40px;">
-                <div style="background: #f8f9fa; padding: 25px; border-radius: 15px; text-align: center; border-left: 6px solid #28a745; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <div style="font-size: 32px; font-weight: bold; color: #28a745; margin-bottom: 5px;">📈 {profitable}</div>
-                    <div style="font-size: 14px; color: #666; text-transform: uppercase; font-weight: 600;">Profitable</div>
-                </div>
-                <div style="background: #f8f9fa; padding: 25px; border-radius: 15px; text-align: center; border-left: 6px solid #dc3545; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <div style="font-size: 32px; font-weight: bold; color: #dc3545; margin-bottom: 5px;">📉 {losses}</div>
-                    <div style="font-size: 14px; color: #666; text-transform: uppercase; font-weight: 600;">Losses</div>
-                </div>
-                <div style="background: #f8f9fa; padding: 25px; border-radius: 15px; text-align: center; border-left: 6px solid #007bff; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <div style="font-size: 32px; font-weight: bold; color: #007bff; margin-bottom: 5px;">🌅 {pre_market}</div>
-                    <div style="font-size: 14px; color: #666; text-transform: uppercase; font-weight: 600;">Pre-Market</div>
-                </div>
-                <div style="background: #f8f9fa; padding: 25px; border-radius: 15px; text-align: center; border-left: 6px solid #6f42c1; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <div style="font-size: 32px; font-weight: bold; color: #6f42c1; margin-bottom: 5px;">🌙 {after_hours}</div>
-                    <div style="font-size: 14px; color: #666; text-transform: uppercase; font-weight: 600;">After Hours</div>
+            <div style="background: #f8f9fa; padding: 16px 20px; border-radius: 12px; margin-bottom: 25px; box-shadow: 0 2px 8px rgba(0,0,0,0.1);">
+                <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                    <div style="flex: 1; text-align: center; padding: 0 10px;">
+                        <div style="font-size: 20px; font-weight: bold; color: #28a745; margin-bottom: 2px;">📈 {profitable}</div>
+                        <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: 600;">Profitable</div>
+                    </div>
+                    <div style="flex: 1; text-align: center; padding: 0 10px;">
+                        <div style="font-size: 20px; font-weight: bold; color: #dc3545; margin-bottom: 2px;">📉 {losses}</div>
+                        <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: 600;">Losses</div>
+                    </div>
+                    <div style="flex: 1; text-align: center; padding: 0 10px;">
+                        <div style="font-size: 20px; font-weight: bold; color: #007bff; margin-bottom: 2px;">🌅 {pre_market}</div>
+                        <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: 600;">Pre-Market</div>
+                    </div>
+                    <div style="flex: 1; text-align: center; padding: 0 10px;">
+                        <div style="font-size: 20px; font-weight: bold; color: #6f42c1; margin-bottom: 2px;">🌙 {after_hours}</div>
+                        <div style="font-size: 11px; color: #666; text-transform: uppercase; font-weight: 600;">After Hours</div>
+                    </div>
                 </div>
             </div>
-            
-            {highlights_section}
-            
+
             <!-- Companies Table -->
-            <div style="background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 8px 25px rgba(0,0,0,0.1); border: 1px solid #e9ecef;">
+            <div class="desktop-table" style="background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 8px 25px rgba(0,0,0,0.1); border: 1px solid #e9ecef;">
                 <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 25px;">
-                    <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow (Sorted by Rating)</h2>
+                    <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow</h2>
                 </div>
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
                         <tr style="background: #f8f9fa;">
                             <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 6%;">Symbol</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 18%;">Company</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 11%;">Time</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 16%;">Company</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 8%;">Time</th>
                             <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 8%;">Price</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 10%;">Target</th>
                             <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 6%;">EPS</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 14%;">Rating</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 15%;">Confidence</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">Rating</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">Confidence</th>
                             <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 22%;">News</th>
                         </tr>
                     </thead>
@@ -434,7 +603,12 @@ def generate_html_report(earnings_data):
                     </tbody>
                 </table>
             </div>
-            
+
+            <!-- Mobile Cards View -->
+            <div class="mobile-cards">
+                {mobile_cards}
+            </div>
+
             <!-- Legend -->
             <div style="background: #f8f9fa; padding: 20px; border-radius: 12px; margin-top: 30px; border-left: 4px solid #667eea;">
                 <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px;">📋 Recommendation Guide</h3>
@@ -447,36 +621,38 @@ def generate_html_report(earnings_data):
                     <div><span style="font-size: 18px;">❓</span> No Data Available</div>
                 </div>
                 <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                    * Recommendations based on EPS analysis and simulated analyst coverage<br>
+                    * Recommendations and target prices based on EPS analysis and simulated analyst coverage<br>
+                    * Target prices show analyst price targets with upside/downside percentage<br>
                     * News links direct to financial news sources for each stock<br>
                     * Companies are sorted by recommendation priority (Strong Buy first, Strong Sell last)
                 </div>
             </div>
-            
+
             <!-- Footer -->
             <div style="margin-top: 40px; padding-top: 25px; border-top: 3px solid #e9ecef; text-align: center; color: #666; font-size: 14px;">
                 <strong>📊 Data Source: NASDAQ</strong> • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
                 EPS = Earnings Per Share (Analyst Estimates) • Pre-Market: Before 9:30 AM • After Hours: After 4:00 PM<br>
                 <br>
+                <strong>Earnings Report v{VERSION}</strong><br>
                 <em>This is an automated financial report. To stop receiving these emails, contact the sender.</em>
             </div>
         </div>
     </body>
     </html>
     """
-    
+
     return html_content
 
 def send_email_sendgrid(subject, html_content, recipients):
     """Send email using SendGrid API"""
-    
+
     api_key = EMAIL_CONFIG['sendgrid_api_key']
     if not api_key:
         print("❌ SendGrid API key not found in environment variables")
         return False
-    
+
     url = "https://api.sendgrid.com/v3/mail/send"
-    
+
     email_data = {
         "personalizations": [
             {
@@ -500,22 +676,22 @@ def send_email_sendgrid(subject, html_content, recipients):
         ],
         "categories": ["earnings-report", "financial-data"]
     }
-    
+
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json"
     }
-    
+
     try:
         response = requests.post(url, headers=headers, json=email_data)
-        
+
         if response.status_code == 202:
             print(f"✅ Email sent successfully via SendGrid to {len(recipients)} recipients")
             return True
         else:
             print(f"❌ SendGrid error: {response.status_code} - {response.text}")
             return False
-            
+
     except Exception as e:
         print(f"❌ Failed to send email via SendGrid: {e}")
         return False
@@ -524,15 +700,15 @@ def save_to_file(subject, html_content):
     """Save report to file as fallback"""
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = f"earnings_report_{timestamp}.html"
-    
+
     try:
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(html_content)
-        
+
         print(f"✅ Report saved to file: {filename}")
         print(f"💡 Open {filename} in your browser to view the report")
         return True
-        
+
     except Exception as e:
         print(f"❌ Failed to save file: {e}")
         return False
@@ -540,53 +716,52 @@ def save_to_file(subject, html_content):
 def validate_config():
     """Validate environment configuration"""
     errors = []
-    
+
     if not EMAIL_CONFIG['sender_email']:
         errors.append("SENDER_EMAIL is required")
-    
+
     if not EMAIL_CONFIG['recipients'] or EMAIL_CONFIG['recipients'] == ['']:
         errors.append("RECIPIENTS is required")
-    
+
     service = EMAIL_CONFIG['email_service']
     if service == 'sendgrid' and not EMAIL_CONFIG['sendgrid_api_key']:
         errors.append("SENDGRID_API_KEY is required when using SendGrid service")
-    
+
     if errors:
         print("❌ Configuration errors:")
         for error in errors:
             print(f"   • {error}")
         print("\n💡 Check your .env file and make sure all required variables are set")
         return False
-    
+
     return True
 
 def main():
     """Main function for cron job"""
-    
+
     if not validate_config():
         return
-    
+
     tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    
+
     earnings_data = get_nasdaq_earnings()
-    
+
     if not earnings_data:
         return
-    
+
     html_report = generate_html_report(earnings_data)
     subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {tomorrow_date}"
-    
+
     service = EMAIL_CONFIG['email_service']
     success = False
-    
+
     if service == 'sendgrid':
         success = send_email_sendgrid(subject, html_report, EMAIL_CONFIG['recipients'])
     else:
         success = save_to_file(subject, html_report)
-    
+
     if not success and service != 'file':
         save_to_file(subject, html_report)
 
 if __name__ == "__main__":
     main()
-    
