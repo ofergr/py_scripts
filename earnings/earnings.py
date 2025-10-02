@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "1.7"
+VERSION = "1.8"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -41,18 +41,21 @@ def get_recommendation_weight(company_data):
     recommendation = analyst_data.get('recommendation', '')
     return recommendation_weights.get(recommendation, float('inf'))
 
-def get_stock_price(symbol):
-    """Get last market closing price from Yahoo Finance"""
-    print(f"💰 Getting price for {symbol}...")
+def get_stock_info(symbol):
+    """Get stock price and industry from Yahoo Finance"""
+    print(f"💰 Getting info for {symbol}...")
+
+    price = None
+    industry = None
 
     try:
-        # Yahoo Finance API endpoint for quote summary
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+        # First try to get price from chart API
+        chart_url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
 
-        response = requests.get(url, headers=headers, timeout=5)
+        response = requests.get(chart_url, headers=headers, timeout=5)
         if response.status_code == 200:
             data = response.json()
 
@@ -62,13 +65,43 @@ def get_stock_price(symbol):
                 # Get the regular market price (closing price)
                 if 'meta' in result and 'regularMarketPrice' in result['meta']:
                     price = result['meta']['regularMarketPrice']
-                    print(f"✅ Got price for {symbol}: ${price:.2f}")
-                    return price
+
+        # Try alternative approach - use search/lookup endpoint
+        try:
+            search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}"
+            response = requests.get(search_url, headers=headers, timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                if 'quotes' in data and data['quotes']:
+                    quote = data['quotes'][0]
+                    if 'sector' in quote and quote['sector']:
+                        industry = quote['sector']
+                    elif 'industry' in quote and quote['industry']:
+                        industry = quote['industry']
+        except:
+            pass
+
+        # If that didn't work, try a basic lookup approach
+        if not industry:
+            # Simple fallback mapping for common cases
+            industry_fallback = {
+                'AAPL': 'Technology', 'MSFT': 'Technology', 'GOOGL': 'Technology', 'AMZN': 'Technology',
+                'TSLA': 'Automotive', 'F': 'Automotive', 'GM': 'Automotive',
+                'JPM': 'Financial', 'BAC': 'Financial', 'WFC': 'Financial',
+                'JNJ': 'Healthcare', 'PFE': 'Healthcare', 'MRK': 'Healthcare',
+                'XOM': 'Energy', 'CVX': 'Energy', 'COP': 'Energy'
+            }
+            industry = industry_fallback.get(symbol.upper())
 
     except Exception as e:
-        print(f"❌ Price fetch error for {symbol}: {e}")
+        print(f"❌ Info fetch error for {symbol}: {e}")
 
-    return None
+    if price:
+        print(f"✅ Got info for {symbol}: ${price:.2f}, {industry or 'N/A'}")
+    else:
+        print(f"⚠️ Partial info for {symbol}: Price=N/A, Industry={industry or 'N/A'}")
+
+    return price, industry
 
 def get_news_link(symbol, company_name):
     """Generate smart news search links - this will ALWAYS work"""
@@ -235,8 +268,8 @@ def get_nasdaq_earnings():
                     print(f"📈 Getting recommendation for {symbol} ({i+1}/{len(data['data']['rows'])})")
                     analyst_data = get_analyst_recommendation_eps_based(symbol, eps_parsed, company_name)
 
-                    # Get stock price (all companies)
-                    stock_price = get_stock_price(symbol)
+                    # Get stock price and industry (all companies)
+                    stock_price, industry = get_stock_info(symbol)
 
                     # Generate target price based on recommendation and current price
                     target_price = get_target_price(stock_price, analyst_data.get('recommendation'), eps_parsed, symbol)
@@ -252,7 +285,8 @@ def get_nasdaq_earnings():
                     price_str = f"${stock_price:.2f}" if stock_price else "N/A"
                     target_str = f"${target_price:.2f}" if target_price else "N/A"
 
-                    print(f"✅ {symbol}: Price={price_str} | Target={target_str} | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Rec={rec} | Conf={confidence} | News={news_summary[:20]}...")
+                    industry_str = industry[:20] + "..." if industry and len(industry) > 20 else (industry or "N/A")
+                    print(f"✅ {symbol}: Price={price_str} | Target={target_str} | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Industry={industry_str} | Rec={rec} | News={news_summary[:15]}...")
 
                     earnings_data.append({
                         'symbol': symbol,
@@ -263,7 +297,8 @@ def get_nasdaq_earnings():
                         'analyst_data': analyst_data,
                         'news': news_data,
                         'stock_price': stock_price,
-                        'target_price': target_price
+                        'target_price': target_price,
+                        'industry': industry
                     })
 
                     # Small delay
@@ -310,6 +345,7 @@ def generate_html_report(earnings_data):
         news_data = company.get('news', {})
         stock_price = company.get('stock_price')
         target_price = company.get('target_price')
+        industry = company.get('industry')
 
         # Format stock price
         price_display = f"${stock_price:.2f}" if stock_price else "N/A"
@@ -380,28 +416,33 @@ def generate_html_report(earnings_data):
         news_summary = news_data.get('summary', 'Search latest news')
         news_url = news_data.get('url', f"https://www.google.com/search?q={symbol}+stock+news&tbm=nws")
 
+        # Format industry
+        industry_display = industry[:15] + "..." if industry and len(industry) > 15 else (industry or "N/A")
+
         # Ensure all variables have safe values
         symbol_safe = symbol or 'N/A'
-        company_safe = company_name[:18] + "..." if company_name and len(company_name) > 18 else (company_name or 'N/A')
+        company_safe = company_name[:16] + "..." if company_name and len(company_name) > 16 else (company_name or 'N/A')
         time_safe = time_display or 'TBD'
         price_safe = price_display or 'N/A'
         target_safe = f'<span style="color: {target_color}; font-weight: bold;">{target_display}{upside_pct}</span>' if target_price else 'N/A'
         eps_safe = eps_display or 'N/A'
+        industry_safe = industry_display or 'N/A'
         rec_safe = f"{rec_icon} {recommendation}" if recommendation else 'N/A'
         conf_safe = confidence if confidence else 'N/A'
-        news_safe = f'<a href="{news_url}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 11px;">{news_summary[:25]}...</a>'
+        news_safe = f'<a href="{news_url}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 11px;">{news_summary[:20]}...</a>'
 
         company_rows += f"""
         <tr style="border-bottom: 1px solid #e9ecef;">
             <td style="padding: 8px; width: 6%;">{symbol_safe}</td>
-            <td style="padding: 8px; width: 16%;">{company_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 8%;">{time_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 8%;">{price_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 10%;">{target_safe}</td>
+            <td style="padding: 8px; width: 14%;">{company_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 7%;">{time_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 7%;">{price_safe}</td>
+            <td style="padding: 8px; text-align: center; width: 9%;">{target_safe}</td>
             <td style="padding: 8px; text-align: center; width: 6%;">{eps_safe}</td>
-            <td style="padding: 8px; width: 12%;">{rec_safe}</td>
-            <td style="padding: 8px; width: 12%;">{conf_safe}</td>
-            <td style="padding: 8px; width: 22%;">{news_safe}</td>
+            <td style="padding: 8px; width: 12%;">{industry_safe}</td>
+            <td style="padding: 8px; width: 10%;">{rec_safe}</td>
+            <td style="padding: 8px; width: 10%;">{conf_safe}</td>
+            <td style="padding: 8px; width: 19%;">{news_safe}</td>
         </tr>
         """
 
@@ -427,12 +468,20 @@ def generate_html_report(earnings_data):
                     <span class="card-value">{eps_safe}</span>
                 </div>
                 <div class="card-item">
+                    <span class="card-label">Industry</span>
+                    <span class="card-value">{industry_safe}</span>
+                </div>
+                <div class="card-item">
                     <span class="card-label">Time</span>
                     <span class="card-value">{time_safe}</span>
                 </div>
+                <div class="card-item">
+                    <span class="card-label">Confidence</span>
+                    <span class="card-value">{conf_safe}</span>
+                </div>
             </div>
             <div class="card-news">
-                <a href="{news_url}" target="_blank">📰 {news_summary[:30]}...</a>
+                <a href="{news_url}" target="_blank">📰 {news_summary[:25]}...</a>
             </div>
         </div>
         """
@@ -487,7 +536,7 @@ def generate_html_report(earnings_data):
             .card-details {{
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 30px;
+                gap: 25px;
             }}
 
             .card-item {{
@@ -588,14 +637,15 @@ def generate_html_report(earnings_data):
                     <thead>
                         <tr style="background: #f8f9fa;">
                             <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 6%;">Symbol</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 16%;">Company</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 8%;">Time</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 8%;">Price</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 10%;">Target</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 14%;">Company</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 7%;">Time</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 7%;">Price</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 9%;">Target</th>
                             <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 6%;">EPS</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">Rating</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">Confidence</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 22%;">News</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">Industry</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 10%;">Rating</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 10%;">Confidence</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 19%;">News</th>
                         </tr>
                     </thead>
                     <tbody>
