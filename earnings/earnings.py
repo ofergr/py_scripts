@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "1.8"
+VERSION = "1.9"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -135,100 +135,179 @@ def get_news_link(symbol, company_name):
         "title": summary
     }
 
-def get_target_price(current_price, recommendation, eps, symbol):
-    """Generate target price based on current price, recommendation, and EPS"""
+def calculate_consensus_rating(strong_buy, buy, hold, sell, strong_sell):
+    """Calculate consensus rating from analyst counts"""
+    
+    total_analysts = strong_buy + buy + hold + sell + strong_sell
+    if total_analysts == 0:
+        return "Hold", 0, "Low"
+    
+    # Calculate weighted score (1=Strong Buy, 5=Strong Sell)
+    weighted_score = (
+        (strong_buy * 1) + 
+        (buy * 2) + 
+        (hold * 3) + 
+        (sell * 4) + 
+        (strong_sell * 5)
+    ) / total_analysts
+    
+    # Map score to rating
+    if weighted_score <= 1.5:
+        consensus = "Strong Buy"
+    elif weighted_score <= 2.5:
+        consensus = "Buy"
+    elif weighted_score <= 3.5:
+        consensus = "Hold"
+    elif weighted_score <= 4.5:
+        consensus = "Sell"
+    else:
+        consensus = "Strong Sell"
+    
+    # Calculate confidence based on agreement
+    max_count = max(strong_buy, buy, hold, sell, strong_sell)
+    confidence_pct = (max_count / total_analysts) * 100
+    
+    if confidence_pct >= 60:
+        confidence = "High"
+    elif confidence_pct >= 40:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+    
+    return consensus, total_analysts, confidence
+
+def get_synthetic_target_price(current_price, recommendation, eps):
+    """Generate synthetic target price when real data unavailable"""
     if current_price is None:
         return None
 
-    # Generate consistent but realistic target price multipliers based on symbol hash
-    symbol_hash = int(hashlib.md5(symbol.encode()).hexdigest()[:6], 16)
-    random.seed(symbol_hash)  # Consistent randomness per symbol
-
     # Base multipliers for each recommendation
     multipliers = {
-        'Strong Buy': (1.15, 1.35),  # 15-35% upside
-        'Buy': (1.08, 1.20),         # 8-20% upside
-        'Hold': (0.95, 1.08),        # -5% to +8%
-        'Sell': (0.75, 0.92),        # -25% to -8% downside
-        'Strong Sell': (0.60, 0.82)  # -40% to -18% downside
+        'Strong Buy': (1.15, 1.25),  # 15-25% upside
+        'Buy': (1.08, 1.15),         # 8-15% upside  
+        'Hold': (0.95, 1.05),        # -5% to +5%
+        'Sell': (0.85, 0.95),        # -15% to -5% downside
+        'Strong Sell': (0.75, 0.85)  # -25% to -15% downside
     }
 
-    # Adjust multiplier based on EPS strength
-    base_min, base_max = multipliers.get(recommendation, (0.95, 1.08))
-
-    if eps is not None:
-        if eps >= 2.0:  # Very strong EPS - increase target
-            base_min += 0.05
-            base_max += 0.10
-        elif eps >= 1.0:  # Good EPS - slight increase
-            base_min += 0.02
-            base_max += 0.05
-        elif eps < -0.5:  # Poor EPS - decrease target
-            base_min -= 0.05
-            base_max -= 0.08
-
-    # Generate target price with some randomness
-    multiplier = random.uniform(base_min, base_max)
+    base_min, base_max = multipliers.get(recommendation, (0.95, 1.05))
+    
+    # Simple average for synthetic target
+    multiplier = (base_min + base_max) / 2
     target_price = current_price * multiplier
 
     return round(target_price, 2)
 
-def get_analyst_recommendation_eps_based(symbol, eps, company_name):
-    """Generate analyst recommendation based on EPS with realistic analyst counts"""
+def get_real_analyst_data(symbol):
+    """Get real analyst ratings and price targets from Finnhub API"""
+    
+    print(f"📊 Getting real analyst data for {symbol}...")
+    
+    # Get API key from environment
+    finnhub_api_key = os.getenv('FINNHUB_IO_API_KEY')
+    
+    analyst_data = {
+        'recommendation': 'Hold',
+        'total_analysts': 0,
+        'source': 'Finnhub Real Data',
+        'confidence': 'Low',
+        'target_price': None,
+        'target_source': 'N/A'
+    }
+    
+    if not finnhub_api_key or finnhub_api_key == 'your_finnhub_api_key_here':
+        print(f"⚠️ No Finnhub API key found for {symbol}, using fallback")
+        return get_fallback_analyst_data(symbol)
+    
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        
+        # Get analyst recommendations
+        rec_url = f"https://finnhub.io/api/v1/stock/recommendation?symbol={symbol}&token={finnhub_api_key}"
+        response = requests.get(rec_url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            rec_data = response.json()
+            if rec_data and len(rec_data) > 0:
+                latest = rec_data[0]  # Most recent data
+                
+                strong_buy = latest.get('strongBuy', 0)
+                buy = latest.get('buy', 0)
+                hold = latest.get('hold', 0)
+                sell = latest.get('sell', 0)
+                strong_sell = latest.get('strongSell', 0)
+                
+                recommendation, total_analysts, confidence = calculate_consensus_rating(
+                    strong_buy, buy, hold, sell, strong_sell
+                )
+                
+                analyst_data.update({
+                    'recommendation': recommendation,
+                    'total_analysts': total_analysts,
+                    'confidence': confidence,
+                    'source': 'Finnhub Real Data'
+                })
+                
+                print(f"✅ Got real recommendation for {symbol}: {recommendation} ({total_analysts} analysts)")
+        
+        # Get price target
+        time.sleep(0.1)  # Rate limit respect
+        target_url = f"https://finnhub.io/api/v1/stock/price-target?symbol={symbol}&token={finnhub_api_key}"
+        response = requests.get(target_url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            target_data = response.json()
+            if target_data and 'targetMean' in target_data and target_data['targetMean']:
+                analyst_data['target_price'] = round(target_data['targetMean'], 2)
+                analyst_data['target_source'] = 'Finnhub Real Data'
+                print(f"✅ Got real price target for {symbol}: ${analyst_data['target_price']}")
+        
+    except Exception as e:
+        print(f"❌ Error fetching analyst data for {symbol}: {e}")
+        return get_fallback_analyst_data(symbol)
+    
+    # If we didn't get any analysts, use fallback
+    if analyst_data['total_analysts'] == 0:
+        return get_fallback_analyst_data(symbol)
+        
+    return analyst_data
 
-    # Generate consistent analyst count based on symbol hash
-    symbol_hash = int(hashlib.md5(symbol.encode()).hexdigest()[:4], 16)
-    base_analysts = 3 + (symbol_hash % 12)  # 3-14 analysts
-
-    # Adjust analyst count based on EPS (higher EPS = more coverage)
-    if eps is None:
-        analyst_count = max(2, base_analysts - 3)
+def get_fallback_analyst_data(symbol, eps=None):
+    """Fallback estimated analyst recommendation when real data unavailable"""
+    
+    print(f"⚠️ Using estimated data for {symbol} (no real analyst data available)")
+    
+    # Simple mapping for common stocks  
+    known_ratings = {
+        'AAPL': ('Buy', 25, 'Medium'),
+        'MSFT': ('Buy', 28, 'Medium'),
+        'GOOGL': ('Buy', 22, 'Medium'), 
+        'AMZN': ('Buy', 24, 'Medium'),
+        'TSLA': ('Hold', 20, 'Low'),
+        'META': ('Buy', 21, 'Medium'),
+        'NVDA': ('Strong Buy', 30, 'High')
+    }
+    
+    if symbol.upper() in known_ratings:
+        rec, analysts, conf = known_ratings[symbol.upper()]
         return {
-            'recommendation': 'Hold',
-            'total_analysts': analyst_count,
-            'source': 'Estimated',
-            'confidence': 'Low'
+            'recommendation': rec,
+            'total_analysts': analysts,
+            'source': 'Estimated (Default)',
+            'confidence': conf,
+            'target_price': None,
+            'target_source': 'N/A'
         }
-    elif eps >= 2.0:  # High performers get more coverage
-        analyst_count = min(15, base_analysts + 4)
-        return {
-            'recommendation': 'Strong Buy',
-            'total_analysts': analyst_count,
-            'source': 'EPS-based',
-            'confidence': 'High'
-        }
-    elif eps >= 1.0:
-        analyst_count = min(12, base_analysts + 2)
-        return {
-            'recommendation': 'Buy',
-            'total_analysts': analyst_count,
-            'source': 'EPS-based',
-            'confidence': 'High'
-        }
-    elif eps > 0:
-        analyst_count = base_analysts
-        return {
-            'recommendation': 'Hold',
-            'total_analysts': analyst_count,
-            'source': 'EPS-based',
-            'confidence': 'Medium'
-        }
-    elif eps >= -0.10:  # Small loss
-        analyst_count = max(3, base_analysts - 2)
-        return {
-            'recommendation': 'Hold',
-            'total_analysts': analyst_count,
-            'source': 'EPS-based',
-            'confidence': 'Medium'
-        }
-    else:  # Significant loss
-        analyst_count = max(2, base_analysts - 4)
-        return {
-            'recommendation': 'Sell',
-            'total_analysts': analyst_count,
-            'source': 'EPS-based',
-            'confidence': 'Medium'
-        }
+    
+    # Generic fallback for unknown stocks
+    return {
+        'recommendation': 'Hold',
+        'total_analysts': 5,
+        'source': 'Estimated (Default)',
+        'confidence': 'Low',
+        'target_price': None,
+        'target_source': 'N/A'
+    }
 
 def get_nasdaq_earnings():
     """Get company earnings from NASDAQ with analyst recommendations and news"""
@@ -264,15 +343,25 @@ def get_nasdaq_earnings():
                         except:
                             eps_parsed = None
 
-                    # Generate analyst recommendation
-                    print(f"📈 Getting recommendation for {symbol} ({i+1}/{len(data['data']['rows'])})")
-                    analyst_data = get_analyst_recommendation_eps_based(symbol, eps_parsed, company_name)
-
                     # Get stock price and industry (all companies)
                     stock_price, industry = get_stock_info(symbol)
-
-                    # Generate target price based on recommendation and current price
-                    target_price = get_target_price(stock_price, analyst_data.get('recommendation'), eps_parsed, symbol)
+                    
+                    # Get real analyst recommendation and target price
+                    print(f"📈 Getting analyst data for {symbol} ({i+1}/{len(data['data']['rows'])})")
+                    analyst_data = get_real_analyst_data(symbol)
+                    
+                    # Use real target price if available, otherwise generate estimated one
+                    target_price = analyst_data.get('target_price')
+                    target_source = analyst_data.get('target_source', 'N/A')
+                    
+                    if not target_price and stock_price:
+                        # Generate estimated target if real one not available
+                        target_price = get_synthetic_target_price(stock_price, analyst_data.get('recommendation'), eps_parsed)
+                        target_source = 'Estimated (Default)'
+                        print(f"🎯 Generated estimated target for {symbol}: ${target_price}")
+                    
+                    # Add target source to analyst data for reporting
+                    analyst_data['target_source'] = target_source
 
                     # Get news link - this will ALWAYS work
                     news_data = get_news_link(symbol, company_name)
@@ -286,7 +375,9 @@ def get_nasdaq_earnings():
                     target_str = f"${target_price:.2f}" if target_price else "N/A"
 
                     industry_str = industry[:20] + "..." if industry and len(industry) > 20 else (industry or "N/A")
-                    print(f"✅ {symbol}: Price={price_str} | Target={target_str} | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Industry={industry_str} | Rec={rec} | News={news_summary[:15]}...")
+                    source_str = analyst_data.get('source', 'Unknown')[:12]
+                    target_source_str = target_source[:12] if target_source != 'N/A' else 'N/A'
+                    print(f"✅ {symbol}: Price={price_str} | Target={target_str} ({target_source_str}) | EPS={f'${eps_parsed:.2f}' if eps_parsed else 'N/A'} | Industry={industry_str} | Rec={rec} ({source_str}) | News={news_summary[:12]}...")
 
                     earnings_data.append({
                         'symbol': symbol,
@@ -416,8 +507,9 @@ def generate_html_report(earnings_data):
         news_summary = news_data.get('summary', 'Search latest news')
         news_url = news_data.get('url', f"https://www.google.com/search?q={symbol}+stock+news&tbm=nws")
 
-        # Format industry
-        industry_display = industry[:15] + "..." if industry and len(industry) > 15 else (industry or "N/A")
+        # Format industry (longer for mobile since we have more space now)
+        industry_display = industry[:25] + "..." if industry and len(industry) > 25 else (industry or "N/A")
+        industry_mobile = industry[:20] + "..." if industry and len(industry) > 20 else (industry or "N/A")
 
         # Ensure all variables have safe values
         symbol_safe = symbol or 'N/A'
@@ -469,7 +561,7 @@ def generate_html_report(earnings_data):
                 </div>
                 <div class="card-item">
                     <span class="card-label">Industry</span>
-                    <span class="card-value">{industry_safe}</span>
+                    <span class="card-value">{industry_mobile}</span>
                 </div>
                 <div class="card-item">
                     <span class="card-label">Time</span>
@@ -536,27 +628,32 @@ def generate_html_report(earnings_data):
             .card-details {{
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 25px;
+                gap: 8px;
             }}
-
+            
             .card-item {{
                 display: flex;
-                justify-content: space-between;
                 align-items: center;
                 padding: 0;
                 margin-bottom: 4px;
             }}
-
+            
             .card-label {{
-                font-size: 11px;
+                font-size: 10px;
                 color: #666;
                 text-transform: uppercase;
                 font-weight: 600;
+                white-space: nowrap;
+                margin-right: 6px;
+                flex-shrink: 0;
+                width: 50px;
             }}
-
+            
             .card-value {{
-                font-size: 13px;
+                font-size: 12px;
                 font-weight: bold;
+                text-align: left;
+                flex: 1;
             }}
 
             .card-news {{
