@@ -198,14 +198,32 @@ def get_synthetic_target_price(current_price, recommendation, eps):
 
     return round(target_price, 2)
 
+def get_yahoo_target_price(symbol):
+    """Get target price from Yahoo Finance using yfinance"""
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+
+        # Try to get target price with timeout
+        info = ticker.get_info()
+        target_mean = info.get('targetMeanPrice')
+
+        if target_mean and target_mean > 0:
+            print(f"✅ Got Yahoo Finance target for {symbol}: ${target_mean:.2f}")
+            return round(target_mean, 2), 'Yahoo Finance'
+    except Exception as e:
+        print(f"⚠️ Yahoo Finance target fetch failed for {symbol}: {str(e)[:50]}")
+
+    return None, 'N/A'
+
 def get_real_analyst_data(symbol):
     """Get real analyst ratings and price targets from Finnhub API"""
-    
+
     print(f"📊 Getting real analyst data for {symbol}...")
-    
+
     # Get API key from environment
     finnhub_api_key = os.getenv('FINNHUB_IO_API_KEY')
-    
+
     analyst_data = {
         'recommendation': 'Hold',
         'total_analysts': 0,
@@ -214,62 +232,69 @@ def get_real_analyst_data(symbol):
         'target_price': None,
         'target_source': 'N/A'
     }
-    
+
     if not finnhub_api_key or finnhub_api_key == 'your_finnhub_api_key_here':
         print(f"⚠️ No Finnhub API key found for {symbol}, using fallback")
         return get_fallback_analyst_data(symbol)
-    
+
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
+
         # Get analyst recommendations
         rec_url = f"https://finnhub.io/api/v1/stock/recommendation?symbol={symbol}&token={finnhub_api_key}"
         response = requests.get(rec_url, headers=headers, timeout=10)
-        
+
         if response.status_code == 200:
             rec_data = response.json()
             if rec_data and len(rec_data) > 0:
                 latest = rec_data[0]  # Most recent data
-                
+
                 strong_buy = latest.get('strongBuy', 0)
                 buy = latest.get('buy', 0)
                 hold = latest.get('hold', 0)
                 sell = latest.get('sell', 0)
                 strong_sell = latest.get('strongSell', 0)
-                
+
                 recommendation, total_analysts, confidence = calculate_consensus_rating(
                     strong_buy, buy, hold, sell, strong_sell
                 )
-                
+
                 analyst_data.update({
                     'recommendation': recommendation,
                     'total_analysts': total_analysts,
                     'confidence': confidence,
                     'source': 'Finnhub Real Data'
                 })
-                
+
                 print(f"✅ Got real recommendation for {symbol}: {recommendation} ({total_analysts} analysts)")
-        
-        # Get price target
+
+        # Try to get price target from Finnhub first
         time.sleep(0.1)  # Rate limit respect
         target_url = f"https://finnhub.io/api/v1/stock/price-target?symbol={symbol}&token={finnhub_api_key}"
         response = requests.get(target_url, headers=headers, timeout=10)
-        
+
         if response.status_code == 200:
             target_data = response.json()
             if target_data and 'targetMean' in target_data and target_data['targetMean']:
                 analyst_data['target_price'] = round(target_data['targetMean'], 2)
                 analyst_data['target_source'] = 'Finnhub Real Data'
-                print(f"✅ Got real price target for {symbol}: ${analyst_data['target_price']}")
-        
+                print(f"✅ Got Finnhub price target for {symbol}: ${analyst_data['target_price']}")
+
+        # If Finnhub doesn't have target price, try Yahoo Finance
+        if not analyst_data['target_price']:
+            yahoo_target, yahoo_source = get_yahoo_target_price(symbol)
+            if yahoo_target:
+                analyst_data['target_price'] = yahoo_target
+                analyst_data['target_source'] = yahoo_source
+
     except Exception as e:
         print(f"❌ Error fetching analyst data for {symbol}: {e}")
         return get_fallback_analyst_data(symbol)
-    
+
     # If we didn't get any analysts, use fallback
     if analyst_data['total_analysts'] == 0:
         return get_fallback_analyst_data(symbol)
-        
+
     return analyst_data
 
 def get_fallback_analyst_data(symbol, eps=None):
@@ -350,18 +375,9 @@ def get_nasdaq_earnings():
                     print(f"📈 Getting analyst data for {symbol} ({i+1}/{len(data['data']['rows'])})")
                     analyst_data = get_real_analyst_data(symbol)
                     
-                    # Use real target price if available, otherwise generate estimated one
+                    # Get target price from analyst data (already fetched from Finnhub/Yahoo)
                     target_price = analyst_data.get('target_price')
                     target_source = analyst_data.get('target_source', 'N/A')
-                    
-                    if not target_price and stock_price:
-                        # Generate estimated target if real one not available
-                        target_price = get_synthetic_target_price(stock_price, analyst_data.get('recommendation'), eps_parsed)
-                        target_source = 'Estimated (Default)'
-                        print(f"🎯 Generated estimated target for {symbol}: ${target_price}")
-                    
-                    # Add target source to analyst data for reporting
-                    analyst_data['target_source'] = target_source
 
                     # Get news link - this will ALWAYS work
                     news_data = get_news_link(symbol, company_name)
@@ -768,8 +784,8 @@ def generate_html_report(earnings_data):
                     <div><span style="font-size: 18px;">❓</span> No Data Available</div>
                 </div>
                 <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                    * Recommendations and target prices based on EPS analysis and simulated analyst coverage<br>
-                    * Target prices show analyst price targets with upside/downside percentage<br>
+                    * Recommendations from Finnhub real analyst consensus data<br>
+                    * Target prices from Finnhub or Yahoo Finance when available<br>
                     * News links direct to financial news sources for each stock<br>
                     * Companies are sorted by recommendation priority (Strong Buy first, Strong Sell last)
                 </div>
