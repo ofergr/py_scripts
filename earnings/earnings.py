@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "1.9"
+VERSION = "1.10"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -137,20 +137,20 @@ def get_news_link(symbol, company_name):
 
 def calculate_consensus_rating(strong_buy, buy, hold, sell, strong_sell):
     """Calculate consensus rating from analyst counts"""
-    
+
     total_analysts = strong_buy + buy + hold + sell + strong_sell
     if total_analysts == 0:
         return "Hold", 0, "Low"
-    
+
     # Calculate weighted score (1=Strong Buy, 5=Strong Sell)
     weighted_score = (
-        (strong_buy * 1) + 
-        (buy * 2) + 
-        (hold * 3) + 
-        (sell * 4) + 
+        (strong_buy * 1) +
+        (buy * 2) +
+        (hold * 3) +
+        (sell * 4) +
         (strong_sell * 5)
     ) / total_analysts
-    
+
     # Map score to rating
     if weighted_score <= 1.5:
         consensus = "Strong Buy"
@@ -162,18 +162,18 @@ def calculate_consensus_rating(strong_buy, buy, hold, sell, strong_sell):
         consensus = "Sell"
     else:
         consensus = "Strong Sell"
-    
+
     # Calculate confidence based on agreement
     max_count = max(strong_buy, buy, hold, sell, strong_sell)
     confidence_pct = (max_count / total_analysts) * 100
-    
+
     if confidence_pct >= 60:
         confidence = "High"
     elif confidence_pct >= 40:
         confidence = "Medium"
     else:
         confidence = "Low"
-    
+
     return consensus, total_analysts, confidence
 
 def get_synthetic_target_price(current_price, recommendation, eps):
@@ -184,14 +184,14 @@ def get_synthetic_target_price(current_price, recommendation, eps):
     # Base multipliers for each recommendation
     multipliers = {
         'Strong Buy': (1.15, 1.25),  # 15-25% upside
-        'Buy': (1.08, 1.15),         # 8-15% upside  
+        'Buy': (1.08, 1.15),         # 8-15% upside
         'Hold': (0.95, 1.05),        # -5% to +5%
         'Sell': (0.85, 0.95),        # -15% to -5% downside
         'Strong Sell': (0.75, 0.85)  # -25% to -15% downside
     }
 
     base_min, base_max = multipliers.get(recommendation, (0.95, 1.05))
-    
+
     # Simple average for synthetic target
     multiplier = (base_min + base_max) / 2
     target_price = current_price * multiplier
@@ -299,20 +299,20 @@ def get_real_analyst_data(symbol):
 
 def get_fallback_analyst_data(symbol, eps=None):
     """Fallback estimated analyst recommendation when real data unavailable"""
-    
+
     print(f"⚠️ Using estimated data for {symbol} (no real analyst data available)")
-    
-    # Simple mapping for common stocks  
+
+    # Simple mapping for common stocks
     known_ratings = {
         'AAPL': ('Buy', 25, 'Medium'),
         'MSFT': ('Buy', 28, 'Medium'),
-        'GOOGL': ('Buy', 22, 'Medium'), 
+        'GOOGL': ('Buy', 22, 'Medium'),
         'AMZN': ('Buy', 24, 'Medium'),
         'TSLA': ('Hold', 20, 'Low'),
         'META': ('Buy', 21, 'Medium'),
         'NVDA': ('Strong Buy', 30, 'High')
     }
-    
+
     if symbol.upper() in known_ratings:
         rec, analysts, conf = known_ratings[symbol.upper()]
         return {
@@ -323,7 +323,7 @@ def get_fallback_analyst_data(symbol, eps=None):
             'target_price': None,
             'target_source': 'N/A'
         }
-    
+
     # Generic fallback for unknown stocks
     return {
         'recommendation': 'Hold',
@@ -370,11 +370,11 @@ def get_nasdaq_earnings():
 
                     # Get stock price and industry (all companies)
                     stock_price, industry = get_stock_info(symbol)
-                    
+
                     # Get real analyst recommendation and target price
                     print(f"📈 Getting analyst data for {symbol} ({i+1}/{len(data['data']['rows'])})")
                     analyst_data = get_real_analyst_data(symbol)
-                    
+
                     # Get target price from analyst data (already fetched from Finnhub/Yahoo)
                     target_price = analyst_data.get('target_price')
                     target_source = analyst_data.get('target_source', 'N/A')
@@ -428,7 +428,7 @@ def get_nasdaq_earnings():
         print(f"❌ NASDAQ error: {e}")
         return []
 
-def generate_html_report(earnings_data):
+def generate_html_report(earnings_data, is_full_report=True):
     """Generate HTML email report with analyst recommendations and news"""
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%A, %B %d, %Y')
 
@@ -441,10 +441,15 @@ def generate_html_report(earnings_data):
     after_hours = len([e for e in earnings_data if e.get('time') == 'time-after-hours'])
 
 
+    # Limit companies in email to prevent Gmail truncation (full report saved separately)
+    email_company_limit = 50  # Adjust this based on your needs
+    display_earnings = earnings_data if is_full_report else earnings_data[:email_company_limit]
+    truncated_count = len(earnings_data) - len(display_earnings) if not is_full_report else 0
+
     # Generate company rows (already sorted by recommendation)
     company_rows = ""
     mobile_cards = ""
-    for company in earnings_data:
+    for company in display_earnings:
         symbol = company.get('symbol', 'N/A')
         company_name = company.get('company', 'N/A')
         time_value = company.get('time', 'time-not-supplied')
@@ -646,14 +651,14 @@ def generate_html_report(earnings_data):
                 grid-template-columns: 1fr 1fr;
                 gap: 8px;
             }}
-            
+
             .card-item {{
                 display: flex;
                 align-items: center;
                 padding: 0;
                 margin-bottom: 4px;
             }}
-            
+
             .card-label {{
                 font-size: 10px;
                 color: #666;
@@ -664,7 +669,7 @@ def generate_html_report(earnings_data):
                 flex-shrink: 0;
                 width: 50px;
             }}
-            
+
             .card-value {{
                 font-size: 12px;
                 font-weight: bold;
@@ -744,7 +749,8 @@ def generate_html_report(earnings_data):
             <!-- Companies Table -->
             <div class="desktop-table" style="background: white; border-radius: 15px; overflow: hidden; box-shadow: 0 8px 25px rgba(0,0,0,0.1); border: 1px solid #e9ecef;">
                 <div style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; padding: 25px;">
-                    <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow</h2>
+                    <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow{f' (Showing {len(display_earnings)} of {len(earnings_data)})' if truncated_count > 0 else ''}</h2>
+                    {f'<p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">⚠️ Email shows top {len(display_earnings)} companies. {truncated_count} additional companies - see attached full report.</p>' if truncated_count > 0 else ''}
                 </div>
                 <table style="width: 100%; border-collapse: collapse;">
                     <thead>
@@ -806,8 +812,8 @@ def generate_html_report(earnings_data):
 
     return html_content
 
-def send_email_sendgrid(subject, html_content, recipients):
-    """Send email using SendGrid API"""
+def send_email_sendgrid(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
+    """Send email using SendGrid API with optional HTML attachment"""
 
     api_key = EMAIL_CONFIG['sendgrid_api_key']
     if not api_key:
@@ -839,6 +845,19 @@ def send_email_sendgrid(subject, html_content, recipients):
         ],
         "categories": ["earnings-report", "financial-data"]
     }
+
+    # Add attachment if provided
+    if attachment_html and attachment_filename:
+        import base64
+        encoded_content = base64.b64encode(attachment_html.encode('utf-8')).decode('utf-8')
+        email_data["attachments"] = [
+            {
+                "content": encoded_content,
+                "type": "text/html",
+                "filename": attachment_filename,
+                "disposition": "attachment"
+            }
+        ]
 
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -912,19 +931,40 @@ def main():
     if not earnings_data:
         return
 
-    html_report = generate_html_report(earnings_data)
+    # Generate full report
+    full_html_report = generate_html_report(earnings_data, is_full_report=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # Always save full report to file as backup
+    full_report_filename = f"earnings_report_full_{timestamp}.html"
+    try:
+        with open(full_report_filename, 'w', encoding='utf-8') as f:
+            f.write(full_html_report)
+        print(f"✅ Full report saved to: {full_report_filename}")
+    except Exception as e:
+        print(f"⚠️ Could not save full report: {e}")
+
+    # Determine if we need to limit the email content
+    needs_truncation = len(earnings_data) > 50
+
+    # Generate email content (limited if needed)
+    email_html_report = generate_html_report(earnings_data, is_full_report=not needs_truncation)
     subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {tomorrow_date}"
 
     service = EMAIL_CONFIG['email_service']
     success = False
 
     if service == 'sendgrid':
-        success = send_email_sendgrid(subject, html_report, EMAIL_CONFIG['recipients'])
+        # Attach full report if content was truncated
+        attachment_html = full_html_report if needs_truncation else None
+        attachment_name = f"earnings_full_report_{tomorrow_date}.html" if needs_truncation else None
+        success = send_email_sendgrid(subject, email_html_report, EMAIL_CONFIG['recipients'],
+                                      attachment_html, attachment_name)
     else:
-        success = save_to_file(subject, html_report)
+        success = save_to_file(subject, email_html_report)
 
     if not success and service != 'file':
-        save_to_file(subject, html_report)
+        save_to_file(subject, email_html_report)
 
 if __name__ == "__main__":
     main()
