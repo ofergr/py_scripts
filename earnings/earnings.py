@@ -144,21 +144,21 @@ def calculate_consensus_rating(strong_buy, buy, hold, sell, strong_sell):
 
     # Calculate weighted score (1=Strong Buy, 5=Strong Sell)
     weighted_score = (
-        (strong_buy * 1) +
-        (buy * 2) +
-        (hold * 3) +
-        (sell * 4) +
+        (strong_buy * 1) + 
+        (buy * 2) + 
+        (hold * 3) + 
+        (sell * 4) + 
         (strong_sell * 5)
     ) / total_analysts
-
-    # Map score to rating
-    if weighted_score <= 1.5:
+    
+    # Map score to rating with more realistic thresholds
+    if weighted_score <= 1.75:
         consensus = "Strong Buy"
     elif weighted_score <= 2.5:
         consensus = "Buy"
     elif weighted_score <= 3.5:
         consensus = "Hold"
-    elif weighted_score <= 4.5:
+    elif weighted_score <= 4.25:
         consensus = "Sell"
     else:
         consensus = "Strong Sell"
