@@ -139,13 +139,13 @@ def calculate_consensus_rating(strong_buy, buy, hold, sell, strong_sell):
 
     # Calculate weighted score (1=Strong Buy, 5=Strong Sell)
     weighted_score = (
-        (strong_buy * 1) + 
-        (buy * 2) + 
-        (hold * 3) + 
-        (sell * 4) + 
+        (strong_buy * 1) +
+        (buy * 2) +
+        (hold * 3) +
+        (sell * 4) +
         (strong_sell * 5)
     ) / total_analysts
-    
+
     # Map score to rating with more realistic thresholds
     if weighted_score <= 1.75:
         consensus = "Strong Buy"
@@ -318,7 +318,7 @@ async def fetch_company_data(session, row, semaphore):
     async with semaphore:  # Limit concurrent requests
         symbol = row.get('symbol', 'N/A')
         company_name = row.get('name', 'N/A')
-        
+
         # Parse EPS value
         eps_value = row.get('epsForecast', '')
         eps_parsed = None
@@ -328,26 +328,26 @@ async def fetch_company_data(session, row, semaphore):
                 eps_parsed = float(eps_clean) if eps_clean else None
             except:
                 eps_parsed = None
-        
+
         # Fetch all data sources in parallel for this company
         tasks = [
             get_stock_info_async(session, symbol),
             get_real_analyst_data_async(session, symbol)
         ]
-        
+
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Unpack results
         stock_price, industry = results[0] if not isinstance(results[0], Exception) else (None, None)
         analyst_data = results[1] if not isinstance(results[1], Exception) else get_fallback_analyst_data(symbol)
-        
+
         # Get target price from analyst data
         target_price = analyst_data.get('target_price')
         target_source = analyst_data.get('target_source', 'N/A')
-        
+
         # Get news link (synchronous, very fast)
         news_data = get_news_link(symbol, company_name)
-        
+
         return {
             'symbol': symbol,
             'company': company_name,
@@ -387,17 +387,17 @@ async def get_nasdaq_earnings_async():
 
                         # Create semaphore to limit concurrent requests (avoid overwhelming APIs)
                         semaphore = asyncio.Semaphore(50)  # 50 concurrent requests max
-                        
+
                         # Create tasks for all companies
                         tasks = [fetch_company_data(session, row, semaphore) for row in rows]
-                        
+
                         # Execute all tasks in parallel with progress updates
                         start_time = time.time()
                         earnings_data = await asyncio.gather(*tasks, return_exceptions=True)
-                        
+
                         # Filter out exceptions
                         earnings_data = [e for e in earnings_data if not isinstance(e, Exception)]
-                        
+
                         elapsed = time.time() - start_time
                         print(f"✅ Fetched {len(earnings_data)} companies in {elapsed:.1f} seconds!")
                         print(f"📊 Average: {elapsed/len(earnings_data):.2f}s per company")
@@ -851,7 +851,8 @@ def send_email_sendgrid(subject, html_content, recipients, attachment_html=None,
                 "content": encoded_content,
                 "type": "text/html",
                 "filename": attachment_filename,
-                "disposition": "attachment"
+                "disposition": "attachment",
+                "content_id": "earnings_report"
             }
         ]
 
