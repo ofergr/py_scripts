@@ -362,12 +362,15 @@ async def fetch_company_data(session, row, semaphore):
         }
 
 
-async def get_nasdaq_earnings_async():
+async def get_nasdaq_earnings_async(target_date=None):
     """Get company earnings from NASDAQ with analyst recommendations and news (async)"""
     print("📊 Fetching earnings from NASDAQ...")
 
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
-    api_url = f"https://api.nasdaq.com/api/calendar/earnings?date={tomorrow}"
+    if target_date is None:
+        target_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+
+    print(f"🗓️  Checking earnings for: {target_date}")
+    api_url = f"https://api.nasdaq.com/api/calendar/earnings?date={target_date}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'Accept': 'application/json, text/plain, */*'
@@ -380,7 +383,7 @@ async def get_nasdaq_earnings_async():
                     data = await response.json()
 
                     earnings_data = []
-                    if 'data' in data and 'rows' in data['data']:
+                    if 'data' in data and 'rows' in data['data'] and data['data']['rows'] is not None:
                         rows = data['data']['rows']
                         print(f"🔍 Found {len(rows)} companies, fetching data in parallel...")
                         print(f"⚡ Using async parallelization for 50x speed improvement!")
@@ -402,16 +405,18 @@ async def get_nasdaq_earnings_async():
                         print(f"✅ Fetched {len(earnings_data)} companies in {elapsed:.1f} seconds!")
                         print(f"📊 Average: {elapsed/len(earnings_data):.2f}s per company")
 
-            # SORT BY RECOMMENDATION PRIORITY
-            print("🔄 Sorting companies by recommendation priority...")
-            earnings_data.sort(key=get_recommendation_weight)
+                        # SORT BY RECOMMENDATION PRIORITY
+                        print("🔄 Sorting companies by recommendation priority...")
+                        earnings_data.sort(key=get_recommendation_weight)
 
-            # Print sorted order for verification
-            print("📋 Sorted order:")
-            for i, company in enumerate(earnings_data):
-                rec = company['analyst_data']['recommendation']
-                weight = get_recommendation_weight(company)
-                print(f"  {i+1}. {company['symbol']} - {rec} (weight: {weight})")
+                        # Print sorted order for verification
+                        print("📋 Sorted order:")
+                        for i, company in enumerate(earnings_data):
+                            rec = company['analyst_data']['recommendation']
+                            weight = get_recommendation_weight(company)
+                            print(f"  {i+1}. {company['symbol']} - {rec} (weight: {weight})")
+                    else:
+                        print("ℹ️  No companies found reporting earnings tomorrow")
 
             return earnings_data
 
@@ -420,13 +425,15 @@ async def get_nasdaq_earnings_async():
         return []
 
 
-def get_nasdaq_earnings():
+def get_nasdaq_earnings(target_date=None):
     """Wrapper to run async function synchronously"""
-    return asyncio.run(get_nasdaq_earnings_async())
+    return asyncio.run(get_nasdaq_earnings_async(target_date))
 
-def generate_html_report(earnings_data, is_full_report=True):
+def generate_html_report(earnings_data, target_date_display=None, is_full_report=True):
     """Generate HTML email report with analyst recommendations and news"""
-    tomorrow = (datetime.now() + timedelta(days=1)).strftime('%A, %B %d, %Y')
+    if target_date_display is None:
+        target_date_display = (datetime.now() + timedelta(days=1)).strftime('%A, %B %d, %Y')
+    tomorrow = target_date_display
 
     # Calculate statistics
     total_companies = len(earnings_data)
@@ -917,19 +924,34 @@ def validate_config():
 
 def main():
     """Main function for cron job"""
+    import argparse
+
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(description='Fetch earnings reports for a specific date')
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=1,
+        help='Number of days from today to fetch earnings (default: 1 for tomorrow)'
+    )
+    args = parser.parse_args()
 
     if not validate_config():
         return
 
-    tomorrow_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
+    # Calculate target date based on days parameter
+    target_date = (datetime.now() + timedelta(days=args.days)).strftime('%Y-%m-%d')
+    target_date_display = (datetime.now() + timedelta(days=args.days)).strftime('%A, %B %d, %Y')
 
-    earnings_data = get_nasdaq_earnings()
+    print(f"📅 Fetching earnings for: {target_date_display}")
+
+    earnings_data = get_nasdaq_earnings(target_date=target_date)
 
     if not earnings_data:
         return
 
     # Generate full report
-    full_html_report = generate_html_report(earnings_data, is_full_report=True)
+    full_html_report = generate_html_report(earnings_data, target_date_display, is_full_report=True)
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # Always save full report to file as backup
@@ -945,8 +967,8 @@ def main():
     needs_truncation = len(earnings_data) > 50
 
     # Generate email content (limited if needed)
-    email_html_report = generate_html_report(earnings_data, is_full_report=not needs_truncation)
-    subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {tomorrow_date}"
+    email_html_report = generate_html_report(earnings_data, target_date_display, is_full_report=not needs_truncation)
+    subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {target_date}"
 
     service = EMAIL_CONFIG['email_service']
     success = False
@@ -954,7 +976,7 @@ def main():
     if service == 'sendgrid':
         # Attach full report if content was truncated
         attachment_html = full_html_report if needs_truncation else None
-        attachment_name = f"earnings_full_report_{tomorrow_date}.html" if needs_truncation else None
+        attachment_name = f"earnings_full_report_{target_date}.html" if needs_truncation else None
         success = send_email_sendgrid(subject, email_html_report, EMAIL_CONFIG['recipients'],
                                       attachment_html, attachment_name)
     else:
