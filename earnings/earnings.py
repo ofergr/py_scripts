@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "2.0"
+VERSION = "2.1"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -22,10 +22,10 @@ load_dotenv()
 
 # Email configuration from environment variables
 EMAIL_CONFIG = {
-    'sendgrid_api_key': os.getenv('SENDGRID_API_KEY'),
     'sender_email': os.getenv('SENDER_EMAIL'),
+    'sender_password': os.getenv('SENDER_PASSWORD'),
     'recipients': os.getenv('RECIPIENTS', '').split(',') if os.getenv('RECIPIENTS') else [],
-    'email_service': os.getenv('EMAIL_SERVICE', 'sendgrid')
+    'email_service': os.getenv('EMAIL_SERVICE', 'gmail')
 }
 
 # RECOMMENDATION SORTING WEIGHTS
@@ -37,16 +37,155 @@ recommendation_weights = {
     "Strong Sell": 5,
 }
 
+# FILTERING THRESHOLDS
+FILTER_CONFIG = {
+    'min_market_cap': 1_000_000_000,  # $1 billion (small/mid-cap threshold)
+    'min_analysts': 5,  # Minimum analyst coverage
+    'require_major_index': True,  # Must be in S&P 500, NASDAQ 100, or Russell 2000
+    'min_stock_price': 5.0  # Minimum stock price (filters out penny stocks)
+}
+
+# Cache for major index constituents
+_INDEX_CACHE = {
+    'sp500': None,
+    'nasdaq100': None,
+    'russell2000': None,
+    'last_updated': None
+}
+
 def get_recommendation_weight(company_data):
     """Extract recommendation weight for sorting"""
     analyst_data = company_data.get('analyst_data', {})
     recommendation = analyst_data.get('recommendation', '')
     return recommendation_weights.get(recommendation, float('inf'))
 
+async def get_major_index_constituents_async(session):
+    """Fetch lists of major index constituents (async with caching)"""
+    global _INDEX_CACHE
+
+    # Check if cache is still valid (refresh daily)
+    if _INDEX_CACHE['last_updated']:
+        cache_age = datetime.now() - _INDEX_CACHE['last_updated']
+        if cache_age.total_seconds() < 86400:  # 24 hours
+            return _INDEX_CACHE
+
+    print("📋 Fetching major index constituents...")
+
+    sp500_symbols = set()
+    nasdaq100_symbols = set()
+    russell2000_symbols = set()
+
+    # Fetch S&P 500 from Wikipedia
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            if response.status == 200:
+                html = await response.text()
+                # Simple parsing - look for ticker symbols in the first table
+                import re
+                # Match ticker patterns in table cells
+                matches = re.findall(r'<td><a[^>]*>([A-Z]{1,5})</a></td>', html)
+                sp500_symbols = set(matches[:500])  # Take first 500 matches
+                print(f"✅ Found {len(sp500_symbols)} S&P 500 symbols")
+    except Exception as e:
+        print(f"⚠️ Could not fetch S&P 500 list: {str(e)[:50]}")
+
+    # Fetch NASDAQ 100 from Wikipedia
+    try:
+        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            if response.status == 200:
+                html = await response.text()
+                import re
+                matches = re.findall(r'<td><a[^>]*>([A-Z]{1,5})</a></td>', html)
+                nasdaq100_symbols = set(matches[:100])  # Take first 100 matches
+                print(f"✅ Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
+    except Exception as e:
+        print(f"⚠️ Could not fetch NASDAQ 100 list: {str(e)[:50]}")
+
+    # For Russell 2000, we'll use a simplified approach - any symbol not in S&P 500/NASDAQ 100
+    # with market cap between $300M - $10B is likely Russell 2000
+    # We won't pre-fetch Russell 2000 as it's too large and changes frequently
+
+    _INDEX_CACHE = {
+        'sp500': sp500_symbols,
+        'nasdaq100': nasdaq100_symbols,
+        'russell2000': russell2000_symbols,  # Empty for now
+        'last_updated': datetime.now()
+    }
+
+    return _INDEX_CACHE
+
+def is_in_major_index(symbol, market_cap, index_cache):
+    """Check if symbol is in a major index"""
+    symbol_upper = symbol.upper()
+
+    # Check S&P 500
+    if index_cache['sp500'] and symbol_upper in index_cache['sp500']:
+        return True, 'S&P 500'
+
+    # Check NASDAQ 100
+    if index_cache['nasdaq100'] and symbol_upper in index_cache['nasdaq100']:
+        return True, 'NASDAQ 100'
+
+    # Heuristic for Russell 2000: mid-cap stocks not in S&P 500 or NASDAQ 100
+    if market_cap and 300_000_000 <= market_cap <= 10_000_000_000:
+        if symbol_upper not in index_cache['sp500'] and symbol_upper not in index_cache['nasdaq100']:
+            return True, 'Russell 2000 (estimated)'
+
+    return False, None
+
+def apply_filters(earnings_data, index_cache):
+    """Apply filtering criteria to earnings data"""
+    filtered = []
+    stats = {
+        'total': len(earnings_data),
+        'failed_market_cap': 0,
+        'failed_analyst_coverage': 0,
+        'failed_index': 0,
+        'failed_stock_price': 0,
+        'passed': 0
+    }
+
+    for company in earnings_data:
+        symbol = company.get('symbol', '')
+        market_cap = company.get('market_cap')
+        analyst_count = company.get('analyst_data', {}).get('total_analysts', 0)
+        stock_price = company.get('stock_price')
+
+        # Filter 1: Market cap (must be mid-cap or larger: >= $1B)
+        if not market_cap or market_cap < FILTER_CONFIG['min_market_cap']:
+            stats['failed_market_cap'] += 1
+            continue
+
+        # Filter 2: Analyst coverage (must have 5+ analysts)
+        if analyst_count < FILTER_CONFIG['min_analysts']:
+            stats['failed_analyst_coverage'] += 1
+            continue
+
+        # Filter 3: Major index membership
+        in_index, index_name = is_in_major_index(symbol, market_cap, index_cache)
+        if FILTER_CONFIG['require_major_index'] and not in_index:
+            stats['failed_index'] += 1
+            continue
+
+        # Filter 4: Stock price (filter out penny stocks < $5)
+        if not stock_price or stock_price < FILTER_CONFIG['min_stock_price']:
+            stats['failed_stock_price'] += 1
+            continue
+
+        # Passed all filters
+        company['index'] = index_name
+        filtered.append(company)
+        stats['passed'] += 1
+
+    return filtered, stats
+
 async def get_stock_info_async(session, symbol):
-    """Get stock price and industry from Yahoo Finance (async)"""
+    """Get stock price, industry, and market cap from Yahoo Finance (async)"""
     price = None
     industry = None
+    market_cap = None
 
     try:
         # First try to get price from chart API
@@ -66,20 +205,36 @@ async def get_stock_info_async(session, symbol):
                 if 'meta' in result and 'regularMarketPrice' in result['meta']:
                     price = result['meta']['regularMarketPrice']
 
-        # Try alternative approach - use search/lookup endpoint
+        # Try to get market cap and industry from quote summary
         try:
-            search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}"
-            async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            quote_url = f"https://query1.finance.yahoo.com/v7/finance/quote?symbols={symbol}"
+            async with session.get(quote_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
                 if response.status == 200:
                     data = await response.json()
-                if 'quotes' in data and data['quotes']:
-                    quote = data['quotes'][0]
-                    if 'sector' in quote and quote['sector']:
-                        industry = quote['sector']
-                    elif 'industry' in quote and quote['industry']:
-                        industry = quote['industry']
+                    if 'quoteResponse' in data and 'result' in data['quoteResponse'] and data['quoteResponse']['result']:
+                        quote = data['quoteResponse']['result'][0]
+                        if 'marketCap' in quote and quote['marketCap']:
+                            market_cap = quote['marketCap']
+                        if 'sector' in quote and quote['sector']:
+                            industry = quote['sector']
         except:
             pass
+
+        # Try alternative approach - use search/lookup endpoint
+        if not industry:
+            try:
+                search_url = f"https://query1.finance.yahoo.com/v1/finance/search?q={symbol}"
+                async with session.get(search_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                    if 'quotes' in data and data['quotes']:
+                        quote = data['quotes'][0]
+                        if 'sector' in quote and quote['sector']:
+                            industry = quote['sector']
+                        elif 'industry' in quote and quote['industry']:
+                            industry = quote['industry']
+            except:
+                pass
 
         # If that didn't work, try a basic lookup approach
         if not industry:
@@ -96,7 +251,7 @@ async def get_stock_info_async(session, symbol):
     except Exception as e:
         pass  # Silent fail for parallel processing
 
-    return price, industry
+    return price, industry, market_cap
 
 def get_news_link(symbol, company_name):
     """Generate smart news search links - this will ALWAYS work"""
@@ -194,7 +349,7 @@ def get_synthetic_target_price(current_price, recommendation, eps):
     return round(target_price, 2)
 
 def get_yahoo_target_price(symbol):
-    """Get target price from Yahoo Finance using yfinance"""
+    """Get target price from Yahoo Finance using yfinance (synchronous helper)"""
     try:
         import yfinance as yf
         ticker = yf.Ticker(symbol)
@@ -211,8 +366,13 @@ def get_yahoo_target_price(symbol):
 
     return None, 'N/A'
 
+async def get_yahoo_target_price_async(symbol):
+    """Get target price from Yahoo Finance using yfinance (async wrapper)"""
+    # Run the synchronous yfinance call in a thread pool
+    return await asyncio.to_thread(get_yahoo_target_price, symbol)
+
 async def get_real_analyst_data_async(session, symbol):
-    """Get real analyst ratings and price targets from Finnhub API (async)"""
+    """Get real analyst ratings, price targets, and market cap from Finnhub API (async)"""
 
     # Get API key from environment
     finnhub_api_key = os.getenv('FINNHUB_IO_API_KEY')
@@ -223,7 +383,8 @@ async def get_real_analyst_data_async(session, symbol):
         'source': 'Finnhub Real Data',
         'confidence': 'Low',
         'target_price': None,
-        'target_source': 'N/A'
+        'target_source': 'N/A',
+        'market_cap': None
     }
 
     if not finnhub_api_key or finnhub_api_key == 'your_finnhub_api_key_here':
@@ -232,7 +393,17 @@ async def get_real_analyst_data_async(session, symbol):
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
 
+        # Get company profile (includes market cap)
+        profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={symbol}&token={finnhub_api_key}"
+        async with session.get(profile_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+            if response.status == 200:
+                profile_data = await response.json()
+                if profile_data and 'marketCapitalization' in profile_data:
+                    # Finnhub returns market cap in millions
+                    analyst_data['market_cap'] = profile_data['marketCapitalization'] * 1_000_000
+
         # Get analyst recommendations
+        await asyncio.sleep(0.05)  # Small delay for rate limiting
         rec_url = f"https://finnhub.io/api/v1/stock/recommendation?symbol={symbol}&token={finnhub_api_key}"
         async with session.get(rec_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
             if response.status == 200:
@@ -257,7 +428,7 @@ async def get_real_analyst_data_async(session, symbol):
                     'source': 'Finnhub Real Data'
                 })
 
-        # Try to get price target from Finnhub first
+        # Try to get price target from Finnhub
         await asyncio.sleep(0.05)  # Small delay for rate limiting
         target_url = f"https://finnhub.io/api/v1/stock/price-target?symbol={symbol}&token={finnhub_api_key}"
         async with session.get(target_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
@@ -266,6 +437,16 @@ async def get_real_analyst_data_async(session, symbol):
                 if target_data and 'targetMean' in target_data and target_data['targetMean']:
                     analyst_data['target_price'] = round(target_data['targetMean'], 2)
                     analyst_data['target_source'] = 'Finnhub Real Data'
+
+        # If Finnhub didn't provide a target price, try Yahoo Finance as fallback
+        if analyst_data['target_price'] is None:
+            try:
+                yahoo_target, yahoo_source = await get_yahoo_target_price_async(symbol)
+                if yahoo_target:
+                    analyst_data['target_price'] = yahoo_target
+                    analyst_data['target_source'] = yahoo_source
+            except Exception as e:
+                print(f"⚠️ Yahoo Finance fallback failed for {symbol}: {str(e)[:50]}")
 
     except Exception as e:
         return get_fallback_analyst_data(symbol)
@@ -338,12 +519,13 @@ async def fetch_company_data(session, row, semaphore):
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
         # Unpack results
-        stock_price, industry = results[0] if not isinstance(results[0], Exception) else (None, None)
+        stock_price, industry, yahoo_market_cap = results[0] if not isinstance(results[0], Exception) else (None, None, None)
         analyst_data = results[1] if not isinstance(results[1], Exception) else get_fallback_analyst_data(symbol)
 
-        # Get target price from analyst data
+        # Get target price and market cap from analyst data
         target_price = analyst_data.get('target_price')
         target_source = analyst_data.get('target_source', 'N/A')
+        market_cap = analyst_data.get('market_cap') or yahoo_market_cap  # Prefer Finnhub, fallback to Yahoo
 
         # Get news link (synchronous, very fast)
         news_data = get_news_link(symbol, company_name)
@@ -358,7 +540,8 @@ async def fetch_company_data(session, row, semaphore):
             'news': news_data,
             'stock_price': stock_price,
             'target_price': target_price,
-            'industry': industry
+            'industry': industry,
+            'market_cap': market_cap
         }
 
 
@@ -378,6 +561,9 @@ async def get_nasdaq_earnings_async(target_date=None):
 
     try:
         async with aiohttp.ClientSession() as session:
+            # Fetch major index constituents first
+            index_cache = await get_major_index_constituents_async(session)
+
             async with session.get(api_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
                 if response.status == 200:
                     data = await response.json()
@@ -405,16 +591,37 @@ async def get_nasdaq_earnings_async(target_date=None):
                         print(f"✅ Fetched {len(earnings_data)} companies in {elapsed:.1f} seconds!")
                         print(f"📊 Average: {elapsed/len(earnings_data):.2f}s per company")
 
+                        # APPLY FILTERS
+                        print("\n🔍 Applying filters...")
+                        print(f"   - Market Cap: >= ${FILTER_CONFIG['min_market_cap']:,.0f} (Mid/Large-cap)")
+                        print(f"   - Analyst Coverage: >= {FILTER_CONFIG['min_analysts']} analysts")
+                        print(f"   - Major Index: S&P 500, NASDAQ 100, or Russell 2000")
+                        print(f"   - Stock Price: >= ${FILTER_CONFIG['min_stock_price']:.2f} (No penny stocks)")
+
+                        filtered_data, filter_stats = apply_filters(earnings_data, index_cache)
+
+                        print(f"\n📊 Filter Results:")
+                        print(f"   Total companies: {filter_stats['total']}")
+                        print(f"   ❌ Failed market cap filter: {filter_stats['failed_market_cap']}")
+                        print(f"   ❌ Failed analyst coverage filter: {filter_stats['failed_analyst_coverage']}")
+                        print(f"   ❌ Failed index membership filter: {filter_stats['failed_index']}")
+                        print(f"   ❌ Failed stock price filter: {filter_stats['failed_stock_price']}")
+                        print(f"   ✅ Passed all filters: {filter_stats['passed']}")
+
                         # SORT BY RECOMMENDATION PRIORITY
-                        print("🔄 Sorting companies by recommendation priority...")
-                        earnings_data.sort(key=get_recommendation_weight)
+                        print("\n🔄 Sorting companies by recommendation priority...")
+                        filtered_data.sort(key=get_recommendation_weight)
 
                         # Print sorted order for verification
-                        print("📋 Sorted order:")
-                        for i, company in enumerate(earnings_data):
+                        print("\n📋 Final filtered & sorted list:")
+                        for i, company in enumerate(filtered_data):
                             rec = company['analyst_data']['recommendation']
-                            weight = get_recommendation_weight(company)
-                            print(f"  {i+1}. {company['symbol']} - {rec} (weight: {weight})")
+                            index = company.get('index', 'N/A')
+                            market_cap_b = company.get('market_cap', 0) / 1_000_000_000
+                            analysts = company['analyst_data']['total_analysts']
+                            print(f"  {i+1}. {company['symbol']:6} - {rec:12} | {index:25} | ${market_cap_b:6.1f}B | {analysts} analysts")
+
+                        earnings_data = filtered_data
                     else:
                         print("ℹ️  No companies found reporting earnings tomorrow")
 
@@ -722,7 +929,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
             <h1 style="margin: 0; font-size: 42px; font-weight: bold;">📊 EARNINGS CALENDAR</h1>
             <p style="margin: 15px 0 0 0; font-size: 20px; opacity: 0.9;">{tomorrow}</p>
             <div style="background: rgba(255,255,255,0.2); padding: 15px 25px; border-radius: 25px; display: inline-block; margin-top: 20px;">
-                <span style="font-weight: bold; font-size: 20px;">🏢 {total_companies} Companies Reporting</span>
+                <span style="font-weight: bold; font-size: 20px;">🏢 {total_companies} Major Companies Reporting</span>
             </div>
         </div>
 
@@ -800,6 +1007,23 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                 </div>
             </div>
 
+            <!-- Filter Criteria -->
+            <div style="background: #e8f4f8; padding: 20px; border-radius: 12px; margin-top: 30px; border-left: 4px solid #007bff;">
+                <h3 style="margin: 0 0 15px 0; color: #333; font-size: 18px;">🔍 Filter Criteria</h3>
+                <div style="font-size: 14px; color: #333;">
+                    <strong>This report includes only high-quality companies that meet ALL of the following criteria:</strong>
+                    <div style="margin-top: 10px; line-height: 1.8;">
+                        ✓ <strong>Market Cap:</strong> Minimum ${FILTER_CONFIG['min_market_cap'] / 1_000_000_000:.1f} billion (mid/large-cap stocks)<br>
+                        ✓ <strong>Analyst Coverage:</strong> Minimum {FILTER_CONFIG['min_analysts']} analysts following the company<br>
+                        ✓ <strong>Index Membership:</strong> Must be in S&P 500, NASDAQ 100, or Russell 2000<br>
+                        ✓ <strong>Stock Price:</strong> Minimum ${FILTER_CONFIG['min_stock_price']:.2f} per share (no penny stocks)<br>
+                    </div>
+                </div>
+                <div style="margin-top: 10px; font-size: 12px; color: #666; font-style: italic;">
+                    These filters help focus on liquid, well-researched companies with institutional interest.
+                </div>
+            </div>
+
             <!-- Footer -->
             <div style="margin-top: 40px; padding-top: 25px; border-top: 3px solid #e9ecef; text-align: center; color: #666; font-size: 14px;">
                 <strong>📊 Data Source: NASDAQ</strong> • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
@@ -815,71 +1039,50 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
 
     return html_content
 
-def send_email_sendgrid(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
-    """Send email using SendGrid API with optional HTML attachment"""
+def send_email_gmail(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
+    """Send email using Gmail SMTP with optional HTML attachment"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
 
-    api_key = EMAIL_CONFIG['sendgrid_api_key']
-    if not api_key:
-        print("❌ SendGrid API key not found in environment variables")
+    sender_email = EMAIL_CONFIG['sender_email']
+    sender_password = EMAIL_CONFIG['sender_password']
+
+    if not sender_email or not sender_password:
+        print("❌ Gmail credentials not found in environment variables")
         return False
 
-    url = "https://api.sendgrid.com/v3/mail/send"
-
-    email_data = {
-        "personalizations": [
-            {
-                "to": [{"email": email} for email in recipients],
-                "subject": subject
-            }
-        ],
-        "from": {
-            "email": EMAIL_CONFIG['sender_email'],
-            "name": "Earnings Alert System"
-        },
-        "reply_to": {
-            "email": EMAIL_CONFIG['sender_email'],
-            "name": "Earnings Alert System"
-        },
-        "content": [
-            {
-                "type": "text/html",
-                "value": html_content
-            }
-        ],
-        "categories": ["earnings-report", "financial-data"]
-    }
-
-    # Add attachment if provided
-    if attachment_html and attachment_filename:
-        import base64
-        encoded_content = base64.b64encode(attachment_html.encode('utf-8')).decode('utf-8')
-        email_data["attachments"] = [
-            {
-                "content": encoded_content,
-                "type": "text/html",
-                "filename": attachment_filename,
-                "disposition": "attachment",
-                "content_id": "earnings_report"
-            }
-        ]
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
     try:
-        response = requests.post(url, headers=headers, json=email_data)
+        # Create message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = f"Earnings Alert System <{sender_email}>"
+        msg['To'] = ', '.join(recipients)
 
-        if response.status_code == 202:
-            print(f"✅ Email sent successfully via SendGrid to {len(recipients)} recipients")
-            return True
-        else:
-            print(f"❌ SendGrid error: {response.status_code} - {response.text}")
-            return False
+        # Attach HTML content
+        html_part = MIMEText(html_content, 'html')
+        msg.attach(html_part)
+
+        # Add attachment if provided
+        if attachment_html and attachment_filename:
+            attachment = MIMEBase('text', 'html')
+            attachment.set_payload(attachment_html.encode('utf-8'))
+            encoders.encode_base64(attachment)
+            attachment.add_header('Content-Disposition', f'attachment; filename={attachment_filename}')
+            msg.attach(attachment)
+
+        # Connect to Gmail SMTP server
+        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, recipients, msg.as_string())
+
+        print(f"✅ Email sent successfully via Gmail to {len(recipients)} recipients")
+        return True
 
     except Exception as e:
-        print(f"❌ Failed to send email via SendGrid: {e}")
+        print(f"❌ Failed to send email via Gmail: {e}")
         return False
 
 def save_to_file(subject, html_content):
@@ -910,8 +1113,8 @@ def validate_config():
         errors.append("RECIPIENTS is required")
 
     service = EMAIL_CONFIG['email_service']
-    if service == 'sendgrid' and not EMAIL_CONFIG['sendgrid_api_key']:
-        errors.append("SENDGRID_API_KEY is required when using SendGrid service")
+    if service == 'gmail' and not EMAIL_CONFIG['sender_password']:
+        errors.append("SENDER_PASSWORD is required when using Gmail service")
 
     if errors:
         print("❌ Configuration errors:")
@@ -968,17 +1171,17 @@ def main():
 
     # Generate email content (limited if needed)
     email_html_report = generate_html_report(earnings_data, target_date_display, is_full_report=not needs_truncation)
-    subject = f"📊 Daily Earnings Report with News - {len(earnings_data)} Companies - {target_date}"
+    subject = f"Earnings Report of Major Companies - {target_date}"
 
     service = EMAIL_CONFIG['email_service']
     success = False
 
-    if service == 'sendgrid':
+    if service == 'gmail':
         # Attach full report if content was truncated
         attachment_html = full_html_report if needs_truncation else None
         attachment_name = f"earnings_full_report_{target_date}.html" if needs_truncation else None
-        success = send_email_sendgrid(subject, email_html_report, EMAIL_CONFIG['recipients'],
-                                      attachment_html, attachment_name)
+        success = send_email_gmail(subject, email_html_report, EMAIL_CONFIG['recipients'],
+                                   attachment_html, attachment_name)
     else:
         success = save_to_file(subject, email_html_report)
 
