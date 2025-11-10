@@ -1,5 +1,14 @@
 # Changelog
 
+## Version 2.3 - Ticker Logo
+
+### New Features
+
+#### Adding Companies Logo To Report
+- Add the company logo near its ticker name for easy indetification
+
+---
+
 ## Version 2.2 - Logging Implementation
 
 ### New Features

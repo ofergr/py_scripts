@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "2.2"
+VERSION = "2.3"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -72,6 +72,9 @@ EMAIL_CONFIG = {
     'recipients': os.getenv('RECIPIENTS', '').split(',') if os.getenv('RECIPIENTS') else [],
     'email_service': os.getenv('EMAIL_SERVICE', 'gmail')
 }
+
+# Logo.dev API configuration
+LOGO_DEV_TOKEN = os.getenv('LOGO_DEV_TOKEN', '')
 
 # RECOMMENDATION SORTING WEIGHTS
 recommendation_weights = {
@@ -225,6 +228,33 @@ def apply_filters(earnings_data, index_cache):
         stats['passed'] += 1
 
     return filtered, stats
+
+async def get_company_logo_async(session, symbol):
+    """Get company logo from Logo.dev API (async)"""
+    if not LOGO_DEV_TOKEN:
+        return None
+
+    try:
+        # Logo.dev ticker endpoint - defaults to NYSE/NASDAQ
+        logo_url = f"https://img.logo.dev/ticker/{symbol}?token={LOGO_DEV_TOKEN}&format=png&size=128"
+
+        # Logo.dev doesn't support HEAD requests, so we use GET but don't read the body
+        # Just check the status code to verify the logo exists
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+
+        async with session.get(logo_url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as response:
+            if response.status == 200:
+                # Logo exists, return the URL without reading the image data
+                return logo_url
+            else:
+                return None
+
+    except asyncio.TimeoutError:
+        return None
+    except Exception as e:
+        return None
 
 async def get_stock_info_async(session, symbol):
     """Get stock price, industry, and market cap from Yahoo Finance (async)"""
@@ -558,7 +588,8 @@ async def fetch_company_data(session, row, semaphore):
         # Fetch all data sources in parallel for this company
         tasks = [
             get_stock_info_async(session, symbol),
-            get_real_analyst_data_async(session, symbol)
+            get_real_analyst_data_async(session, symbol),
+            get_company_logo_async(session, symbol)
         ]
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -566,6 +597,7 @@ async def fetch_company_data(session, row, semaphore):
         # Unpack results
         stock_price, industry, yahoo_market_cap = results[0] if not isinstance(results[0], Exception) else (None, None, None)
         analyst_data = results[1] if not isinstance(results[1], Exception) else get_fallback_analyst_data(symbol)
+        logo_url = results[2] if not isinstance(results[2], Exception) else None
 
         # Get target price and market cap from analyst data
         target_price = analyst_data.get('target_price')
@@ -586,7 +618,8 @@ async def fetch_company_data(session, row, semaphore):
             'stock_price': stock_price,
             'target_price': target_price,
             'industry': industry,
-            'market_cap': market_cap
+            'market_cap': market_cap,
+            'logo_url': logo_url
         }
 
 
@@ -713,6 +746,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
         stock_price = company.get('stock_price')
         target_price = company.get('target_price')
         industry = company.get('industry')
+        logo_url = company.get('logo_url')
 
         # Format stock price
         price_display = f"${stock_price:.2f}" if stock_price else "N/A"
@@ -790,6 +824,15 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
         # Ensure all variables have safe values
         symbol_safe = symbol or 'N/A'
         company_safe = company_name[:16] + "..." if company_name and len(company_name) > 16 else (company_name or 'N/A')
+
+        # Create logo HTML if available
+        logo_html = ''
+        if logo_url:
+            logo_html = f'<img src="{logo_url}" alt="{symbol}" style="width: 24px; height: 24px; border-radius: 4px; margin-right: 8px; vertical-align: middle; object-fit: contain;">'
+
+        # Combine logo and company name
+        company_with_logo = f'<div style="display: flex; align-items: center;">{logo_html}<span>{company_safe}</span></div>'
+
         time_safe = time_display or 'TBD'
         price_safe = price_display or 'N/A'
         target_safe = f'<span style="color: {target_color}; font-weight: bold;">{target_display}{upside_pct}</span>' if target_price else 'N/A'
@@ -802,7 +845,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
         company_rows += f"""
         <tr style="border-bottom: 1px solid #e9ecef;">
             <td style="padding: 8px; width: 6%;">{symbol_safe}</td>
-            <td style="padding: 8px; width: 14%;">{company_safe}</td>
+            <td style="padding: 8px; width: 14%;">{company_with_logo}</td>
             <td style="padding: 8px; text-align: center; width: 7%;">{time_safe}</td>
             <td style="padding: 8px; text-align: center; width: 7%;">{price_safe}</td>
             <td style="padding: 8px; text-align: center; width: 9%;">{target_safe}</td>
@@ -815,10 +858,17 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
         """
 
         # Generate mobile card
+        mobile_logo_html = ''
+        if logo_url:
+            mobile_logo_html = f'<img src="{logo_url}" alt="{symbol}" style="width: 32px; height: 32px; border-radius: 6px; margin-right: 12px; object-fit: contain;">'
+
         mobile_cards += f"""
         <div class="mobile-card">
             <div class="card-header">
-                <div class="card-symbol">{symbol_safe}</div>
+                <div style="display: flex; align-items: center;">
+                    {mobile_logo_html}
+                    <div class="card-symbol">{symbol_safe}</div>
+                </div>
                 <div class="card-rating">{rec_safe}</div>
             </div>
             <div class="card-company">{company_name or 'N/A'}</div>
