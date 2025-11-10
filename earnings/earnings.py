@@ -7,6 +7,27 @@ VERSION = "2.1"
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
 
+# Fix for Python 3.9 compatibility with google-api-python-client
+import sys
+if sys.version_info < (3, 10):
+    try:
+        import importlib.metadata as importlib_metadata
+        if not hasattr(importlib_metadata, 'packages_distributions'):
+            # Monkey patch for Python 3.9
+            def packages_distributions():
+                pkg_to_dist = {}
+                for dist in importlib_metadata.distributions():
+                    if dist.files:
+                        for file in dist.files:
+                            pkg = str(file).split('/')[0]
+                            if pkg not in pkg_to_dist:
+                                pkg_to_dist[pkg] = []
+                            pkg_to_dist[pkg].append(dist.name)
+                return pkg_to_dist
+            importlib_metadata.packages_distributions = packages_distributions
+    except Exception:
+        pass
+
 import os
 import requests
 from datetime import datetime, timedelta

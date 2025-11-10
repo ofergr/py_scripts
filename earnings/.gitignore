@@ -1,6 +1,10 @@
 # Environment variables
 .env
 
+# Gmail API credentials (sensitive)
+credentials.json
+token.pickle
+
 # Python
 __pycache__/
 *.py[cod]
@@ -24,3 +28,4 @@ Thumbs.db
 
 # Generated reports
 *.html
+
