@@ -1,16 +1,16 @@
-# Gmail Cloud API Setup Guide
+# Gmail API Setup Guide
 
-This guide explains how to set up the Gmail Cloud API for sending emails when SMTP ports (465, 587) are blocked by firewalls.
+This guide explains how to set up the Gmail API for sending emails when SMTP ports (465, 587) are blocked by firewalls.
 
-## Why Gmail Cloud API?
+## Why Gmail API?
 
-The Gmail Cloud API uses HTTPS (port 443) instead of SMTP ports, making it work in restrictive network environments where SMTP is blocked. The script automatically falls back to the Gmail Cloud API when SMTP fails.
+The Gmail API uses HTTPS (port 443) instead of SMTP ports, making it work in restrictive network environments where SMTP is blocked. The script automatically falls back to the Gmail API when SMTP fails.
 
 ## Setup Steps
 
 ### 1. Install Required Dependencies
 
-On the remote computer, install the Gmail Cloud API libraries:
+On the remote computer, install the Gmail API libraries:
 
 ```bash
 pip install -r requirements.txt
@@ -26,10 +26,11 @@ pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/)
 2. Create a new project (or select an existing one)
-3. Enable the Gmail Cloud API:
+3. Enable the Gmail API:
    - Go to "APIs & Services" > "Library"
-   - Search for "Gmail Cloud API" (or just "Gmail")
+   - Search for "Gmail API"
    - Click "Enable"
+   - **Note**: It may take 1-2 minutes for the API to be fully activated
 
 ### 3. Create OAuth2 Credentials
 
@@ -102,7 +103,7 @@ The script tries email methods in this order:
 
 1. **Gmail SMTP (port 465)** - Fastest if available
 2. **Gmail SMTP (port 587)** - Alternative SMTP port
-3. **Gmail Cloud API (HTTPS)** - Uses port 443, works when SMTP is blocked
+3. **Gmail API (HTTPS)** - Uses port 443, works when SMTP is blocked
 4. **Save to file** - Last resort fallback
 
 You'll see output like:
@@ -112,8 +113,8 @@ You'll see output like:
 🔄 Trying next port...
 ⚠️  Failed to send via SMTP port 587 (STARTTLS): [Errno 110] Connection timed out
 ❌ All SMTP ports failed
-🔄 SMTP failed, trying Gmail Cloud API...
-✅ Email sent successfully via Gmail Cloud API to 3 recipients
+🔄 SMTP failed, trying Gmail API...
+✅ Email sent successfully via Gmail API to 3 recipients
 ```
 
 ## Security Notes
