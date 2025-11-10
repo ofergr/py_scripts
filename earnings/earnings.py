@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "2.1"
+VERSION = "2.2"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -41,9 +41,25 @@ import random
 import asyncio
 import aiohttp
 from dotenv import load_dotenv
+import logging
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure logging
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
+os.makedirs(LOG_DIR, exist_ok=True)
+LOG_FILE = os.path.join(LOG_DIR, f'earnings_{datetime.now().strftime("%Y%m%d")}.log')
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler()  # Also print to console for interactive runs
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Email configuration from environment variables
 EMAIL_CONFIG = {
@@ -94,7 +110,7 @@ async def get_major_index_constituents_async(session):
         if cache_age.total_seconds() < 86400:  # 24 hours
             return _INDEX_CACHE
 
-    print("📋 Fetching major index constituents...")
+    logger.info(" Fetching major index constituents...")
 
     sp500_symbols = set()
     nasdaq100_symbols = set()
@@ -111,9 +127,9 @@ async def get_major_index_constituents_async(session):
                 # Match ticker patterns in table cells
                 matches = re.findall(r'<td><a[^>]*>([A-Z]{1,5})</a></td>', html)
                 sp500_symbols = set(matches[:500])  # Take first 500 matches
-                print(f"✅ Found {len(sp500_symbols)} S&P 500 symbols")
+                logger.info(f" Found {len(sp500_symbols)} S&P 500 symbols")
     except Exception as e:
-        print(f"⚠️ Could not fetch S&P 500 list: {str(e)[:50]}")
+        logger.warning(f" Could not fetch S&P 500 list: {str(e)[:50]}")
 
     # Fetch NASDAQ 100 from Wikipedia
     try:
@@ -124,9 +140,9 @@ async def get_major_index_constituents_async(session):
                 import re
                 matches = re.findall(r'<td><a[^>]*>([A-Z]{1,5})</a></td>', html)
                 nasdaq100_symbols = set(matches[:100])  # Take first 100 matches
-                print(f"✅ Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
+                logger.info(f" Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
     except Exception as e:
-        print(f"⚠️ Could not fetch NASDAQ 100 list: {str(e)[:50]}")
+        logger.warning(f" Could not fetch NASDAQ 100 list: {str(e)[:50]}")
 
     # For Russell 2000, we'll use a simplified approach - any symbol not in S&P 500/NASDAQ 100
     # with market cap between $300M - $10B is likely Russell 2000
@@ -280,7 +296,7 @@ async def get_stock_info_async(session, symbol):
 
 def get_news_link(symbol, company_name):
     """Generate smart news search links - this will ALWAYS work"""
-    print(f"📰 Creating news link for {symbol}...")
+    logger.info(f" Creating news link for {symbol}...")
 
     # Different link options for variety
     link_options = [
@@ -302,7 +318,7 @@ def get_news_link(symbol, company_name):
     summary = random.choice(link_options)
     url = random.choice(url_options)
 
-    print(f"✅ Created news link for {symbol}: {summary[:30]}...")
+    logger.info(f" Created news link for {symbol}: {summary[:30]}...")
 
     return {
         "summary": summary,
@@ -384,10 +400,10 @@ def get_yahoo_target_price(symbol):
         target_mean = info.get('targetMeanPrice')
 
         if target_mean and target_mean > 0:
-            print(f"✅ Got Yahoo Finance target for {symbol}: ${target_mean:.2f}")
+            logger.info(f" Got Yahoo Finance target for {symbol}: ${target_mean:.2f}")
             return round(target_mean, 2), 'Yahoo Finance'
     except Exception as e:
-        print(f"⚠️ Yahoo Finance target fetch failed for {symbol}: {str(e)[:50]}")
+        logger.warning(f" Yahoo Finance target fetch failed for {symbol}: {str(e)[:50]}")
 
     return None, 'N/A'
 
@@ -471,7 +487,7 @@ async def get_real_analyst_data_async(session, symbol):
                     analyst_data['target_price'] = yahoo_target
                     analyst_data['target_source'] = yahoo_source
             except Exception as e:
-                print(f"⚠️ Yahoo Finance fallback failed for {symbol}: {str(e)[:50]}")
+                logger.warning(f" Yahoo Finance fallback failed for {symbol}: {str(e)[:50]}")
 
     except Exception as e:
         return get_fallback_analyst_data(symbol)
@@ -485,7 +501,7 @@ async def get_real_analyst_data_async(session, symbol):
 def get_fallback_analyst_data(symbol, eps=None):
     """Fallback estimated analyst recommendation when real data unavailable"""
 
-    print(f"⚠️ Using estimated data for {symbol} (no real analyst data available)")
+    logger.warning(f" Using estimated data for {symbol} (no real analyst data available)")
 
     # Simple mapping for common stocks
     known_ratings = {
@@ -572,12 +588,12 @@ async def fetch_company_data(session, row, semaphore):
 
 async def get_nasdaq_earnings_async(target_date=None):
     """Get company earnings from NASDAQ with analyst recommendations and news (async)"""
-    print("📊 Fetching earnings from NASDAQ...")
+    logger.info(" Fetching earnings from NASDAQ...")
 
     if target_date is None:
         target_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
 
-    print(f"🗓️  Checking earnings for: {target_date}")
+    logger.info(f"️  Checking earnings for: {target_date}")
     api_url = f"https://api.nasdaq.com/api/calendar/earnings?date={target_date}"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -596,8 +612,8 @@ async def get_nasdaq_earnings_async(target_date=None):
                     earnings_data = []
                     if 'data' in data and 'rows' in data['data'] and data['data']['rows'] is not None:
                         rows = data['data']['rows']
-                        print(f"🔍 Found {len(rows)} companies, fetching data in parallel...")
-                        print(f"⚡ Using async parallelization for 50x speed improvement!")
+                        logger.info(f" Found {len(rows)} companies, fetching data in parallel...")
+                        logger.info(f"⚡ Using async parallelization for 50x speed improvement!")
 
                         # Create semaphore to limit concurrent requests (avoid overwhelming APIs)
                         semaphore = asyncio.Semaphore(50)  # 50 concurrent requests max
@@ -613,47 +629,47 @@ async def get_nasdaq_earnings_async(target_date=None):
                         earnings_data = [e for e in earnings_data if not isinstance(e, Exception)]
 
                         elapsed = time.time() - start_time
-                        print(f"✅ Fetched {len(earnings_data)} companies in {elapsed:.1f} seconds!")
-                        print(f"📊 Average: {elapsed/len(earnings_data):.2f}s per company")
+                        logger.info(f" Fetched {len(earnings_data)} companies in {elapsed:.1f} seconds!")
+                        logger.info(f" Average: {elapsed/len(earnings_data):.2f}s per company")
 
                         # APPLY FILTERS
-                        print("\n🔍 Applying filters...")
-                        print(f"   - Market Cap: >= ${FILTER_CONFIG['min_market_cap']:,.0f} (Mid/Large-cap)")
-                        print(f"   - Analyst Coverage: >= {FILTER_CONFIG['min_analysts']} analysts")
-                        print(f"   - Major Index: S&P 500, NASDAQ 100, or Russell 2000")
-                        print(f"   - Stock Price: >= ${FILTER_CONFIG['min_stock_price']:.2f} (No penny stocks)")
+                        logger.info("\n🔍 Applying filters...")
+                        logger.info(f"   - Market Cap: >= ${FILTER_CONFIG['min_market_cap']:,.0f} (Mid/Large-cap)")
+                        logger.info(f"   - Analyst Coverage: >= {FILTER_CONFIG['min_analysts']} analysts")
+                        logger.info(f"   - Major Index: S&P 500, NASDAQ 100, or Russell 2000")
+                        logger.info(f"   - Stock Price: >= ${FILTER_CONFIG['min_stock_price']:.2f} (No penny stocks)")
 
                         filtered_data, filter_stats = apply_filters(earnings_data, index_cache)
 
-                        print(f"\n📊 Filter Results:")
-                        print(f"   Total companies: {filter_stats['total']}")
-                        print(f"   ❌ Failed market cap filter: {filter_stats['failed_market_cap']}")
-                        print(f"   ❌ Failed analyst coverage filter: {filter_stats['failed_analyst_coverage']}")
-                        print(f"   ❌ Failed index membership filter: {filter_stats['failed_index']}")
-                        print(f"   ❌ Failed stock price filter: {filter_stats['failed_stock_price']}")
-                        print(f"   ✅ Passed all filters: {filter_stats['passed']}")
+                        logger.info(f"\n📊 Filter Results:")
+                        logger.info(f"   Total companies: {filter_stats['total']}")
+                        logger.info(f"   ❌ Failed market cap filter: {filter_stats['failed_market_cap']}")
+                        logger.info(f"   ❌ Failed analyst coverage filter: {filter_stats['failed_analyst_coverage']}")
+                        logger.info(f"   ❌ Failed index membership filter: {filter_stats['failed_index']}")
+                        logger.info(f"   ❌ Failed stock price filter: {filter_stats['failed_stock_price']}")
+                        logger.info(f"   ✅ Passed all filters: {filter_stats['passed']}")
 
                         # SORT BY RECOMMENDATION PRIORITY
-                        print("\n🔄 Sorting companies by recommendation priority...")
+                        logger.info("\n🔄 Sorting companies by recommendation priority...")
                         filtered_data.sort(key=get_recommendation_weight)
 
                         # Print sorted order for verification
-                        print("\n📋 Final filtered & sorted list:")
+                        logger.info("\n📋 Final filtered & sorted list:")
                         for i, company in enumerate(filtered_data):
                             rec = company['analyst_data']['recommendation']
                             index = company.get('index', 'N/A')
                             market_cap_b = company.get('market_cap', 0) / 1_000_000_000
                             analysts = company['analyst_data']['total_analysts']
-                            print(f"  {i+1}. {company['symbol']:6} - {rec:12} | {index:25} | ${market_cap_b:6.1f}B | {analysts} analysts")
+                            logger.info(f"  {i+1}. {company['symbol']:6} - {rec:12} | {index:25} | ${market_cap_b:6.1f}B | {analysts} analysts")
 
                         earnings_data = filtered_data
                     else:
-                        print("ℹ️  No companies found reporting earnings tomorrow")
+                        logger.info("️  No companies found reporting earnings tomorrow")
 
             return earnings_data
 
     except Exception as e:
-        print(f"❌ NASDAQ error: {e}")
+        logger.error(f" NASDAQ error: {e}")
         return []
 
 
@@ -1079,7 +1095,7 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         from email import encoders
         import pickle
     except ImportError:
-        print("❌ Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client")
+        logger.error(" Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client")
         return False
 
     SCOPES = ['https://www.googleapis.com/auth/gmail.send']
@@ -1098,8 +1114,8 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
                 creds.refresh(Request())
             else:
                 if not os.path.exists('credentials.json'):
-                    print("❌ credentials.json not found. Please download OAuth2 credentials from Google Cloud Console")
-                    print("   See setup instructions in the README")
+                    logger.error(" credentials.json not found. Please download OAuth2 credentials from Google Cloud Console")
+                    logger.info("   See setup instructions in the README")
                     return False
                 flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
                 creds = flow.run_local_server(port=0)
@@ -1135,14 +1151,14 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
 
         # Send the message
         service.users().messages().send(userId='me', body=message_body).execute()
-        print(f"✅ Email sent successfully via Gmail API to {len(recipients)} recipients")
+        logger.info(f" Email sent successfully via Gmail API to {len(recipients)} recipients")
         return True
 
     except HttpError as e:
-        print(f"❌ Gmail API error: {e}")
+        logger.error(f" Gmail API error: {e}")
         return False
     except Exception as e:
-        print(f"❌ Failed to send email via Gmail API: {e}")
+        logger.error(f" Failed to send email via Gmail API: {e}")
         return False
 
 def send_email_gmail_smtp(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
@@ -1157,7 +1173,7 @@ def send_email_gmail_smtp(subject, html_content, recipients, attachment_html=Non
     sender_password = EMAIL_CONFIG['sender_password']
 
     if not sender_email or not sender_password:
-        print("❌ Gmail credentials not found in environment variables")
+        logger.error(" Gmail credentials not found in environment variables")
         return False
 
     # Try port 465 first, then 587
@@ -1201,16 +1217,16 @@ def send_email_gmail_smtp(subject, html_content, recipients, attachment_html=Non
                 server.sendmail(sender_email, recipients, msg.as_string())
                 server.quit()
 
-            print(f"✅ Email sent successfully via Gmail SMTP (port {port}) to {len(recipients)} recipients")
+            logger.info(f" Email sent successfully via Gmail SMTP (port {port}) to {len(recipients)} recipients")
             return True
 
         except Exception as e:
-            print(f"⚠️  Failed to send via SMTP port {port} ({method}): {e}")
+            logger.warning(f"  Failed to send via SMTP port {port} ({method}): {e}")
             if port == ports[-1][0]:  # Last port in the list
-                print(f"❌ All SMTP ports failed")
+                logger.error(f" All SMTP ports failed")
                 return False
             else:
-                print(f"🔄 Trying next port...")
+                logger.info(f" Trying next port...")
                 continue
 
     return False
@@ -1219,17 +1235,17 @@ def send_email_gmail(subject, html_content, recipients, attachment_html=None, at
     """Send email using Gmail with automatic fallback: SMTP -> Gmail API -> Save to file"""
 
     # Try SMTP first (faster if available)
-    print("📧 Attempting to send email via Gmail SMTP...")
+    logger.info(" Attempting to send email via Gmail SMTP...")
     if send_email_gmail_smtp(subject, html_content, recipients, attachment_html, attachment_filename):
         return True
 
     # Fall back to Gmail API (works when SMTP ports are blocked)
-    print("🔄 SMTP failed, trying Gmail API...")
+    logger.info(" SMTP failed, trying Gmail API...")
     if send_email_gmail_api(subject, html_content, recipients, attachment_html, attachment_filename):
         return True
 
     # Both methods failed
-    print("❌ Both Gmail SMTP and API failed")
+    logger.error(" Both Gmail SMTP and API failed")
     return False
 
 def save_to_file(subject, html_content):
@@ -1241,12 +1257,12 @@ def save_to_file(subject, html_content):
         with open(filename, 'w', encoding='utf-8') as f:
             f.write(html_content)
 
-        print(f"✅ Report saved to file: {filename}")
-        print(f"💡 Open {filename} in your browser to view the report")
+        logger.info(f" Report saved to file: {filename}")
+        logger.info(f" Open {filename} in your browser to view the report")
         return True
 
     except Exception as e:
-        print(f"❌ Failed to save file: {e}")
+        logger.error(f" Failed to save file: {e}")
         return False
 
 def validate_config():
@@ -1264,10 +1280,10 @@ def validate_config():
         errors.append("SENDER_PASSWORD is required when using Gmail service")
 
     if errors:
-        print("❌ Configuration errors:")
+        logger.error(" Configuration errors:")
         for error in errors:
-            print(f"   • {error}")
-        print("\n💡 Check your .env file and make sure all required variables are set")
+            logger.info(f"   • {error}")
+        logger.info("\n💡 Check your .env file and make sure all required variables are set")
         return False
 
     return True
@@ -1293,7 +1309,7 @@ def main():
     target_date = (datetime.now() + timedelta(days=args.days)).strftime('%Y-%m-%d')
     target_date_display = (datetime.now() + timedelta(days=args.days)).strftime('%A, %B %d, %Y')
 
-    print(f"📅 Fetching earnings for: {target_date_display}")
+    logger.debug(f" Fetching earnings for: {target_date_display}")
 
     earnings_data = get_nasdaq_earnings(target_date=target_date)
 
@@ -1309,9 +1325,9 @@ def main():
     try:
         with open(full_report_filename, 'w', encoding='utf-8') as f:
             f.write(full_html_report)
-        print(f"✅ Full report saved to: {full_report_filename}")
+        logger.info(f" Full report saved to: {full_report_filename}")
     except Exception as e:
-        print(f"⚠️ Could not save full report: {e}")
+        logger.warning(f" Could not save full report: {e}")
 
     # Determine if we need to limit the email content
     needs_truncation = len(earnings_data) > 50

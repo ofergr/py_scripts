@@ -144,6 +144,30 @@ You'll see output like:
 - Check if port 443 (HTTPS) is blocked: `curl -I https://www.googleapis.com`
 - If even HTTPS is blocked, you may need to use a VPN or SSH tunnel
 
+## Logging
+
+The script uses Python's logging module and creates daily log files in the `logs/` directory:
+
+- **Log location**: `logs/earnings_YYYYMMDD.log`
+- **Log levels**: ERROR, WARNING, INFO, DEBUG
+- **Rotation**: New log file created each day
+- **Console output**: Also prints to console for interactive runs
+
+### Viewing logs:
+
+```bash
+# View today's log
+tail -f logs/earnings_$(date +%Y%m%d).log
+
+# View errors only
+grep "ERROR" logs/earnings_*.log
+
+# View last 50 lines
+tail -50 logs/earnings_$(date +%Y%m%d).log
+```
+
+This is especially useful when running from cron jobs where console output isn't visible.
+
 ## Maintenance
 
 The `token.pickle` file contains a refresh token that automatically renews your access. You typically don't need to re-authenticate unless:
