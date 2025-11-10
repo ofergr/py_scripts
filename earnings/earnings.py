@@ -6,6 +6,7 @@ VERSION = "2.2"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
+warnings.filterwarnings('ignore', category=FutureWarning, module='google.api_core._python_version_support')
 
 # Fix for Python 3.9 compatibility with google-api-python-client
 import sys
