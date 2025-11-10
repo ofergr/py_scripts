@@ -1158,12 +1158,21 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
             msg.attach(attachment)
 
         # Encode the message
-        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+        msg_bytes = msg.as_bytes()
+        msg_size_kb = len(msg_bytes) / 1024
+        logger.info(f"Message size: {msg_size_kb:.1f} KB")
+        raw_message = base64.urlsafe_b64encode(msg_bytes).decode('utf-8')
         message_body = {'raw': raw_message}
 
-        # Send the message
-        logger.info("Sending email via Gmail API")
-        service.users().messages().send(userId='me', body=message_body).execute()
+        # Send the message (with extended timeout)
+        logger.info("Sending email via Gmail API (this may take 30-60 seconds for large messages)")
+        import socket
+        original_timeout = socket.getdefaulttimeout()
+        socket.setdefaulttimeout(90)  # Extended timeout for large messages
+        try:
+            service.users().messages().send(userId='me', body=message_body).execute()
+        finally:
+            socket.setdefaulttimeout(original_timeout)
         logger.info(f" Email sent successfully via Gmail API to {len(recipients)} recipients")
         return True
 
