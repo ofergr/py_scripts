@@ -61,6 +61,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Suppress google auth file_cache warnings
+logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
+
 # Email configuration from environment variables
 EMAIL_CONFIG = {
     'sender_email': os.getenv('SENDER_EMAIL'),
