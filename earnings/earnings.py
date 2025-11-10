@@ -1105,15 +1105,22 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
     sender_email = EMAIL_CONFIG['sender_email']
 
     try:
+        import socket
+
+        # Set global socket timeout to prevent hanging
+        socket.setdefaulttimeout(30)
+
         creds = None
         # Token file stores the user's access and refresh tokens
         if os.path.exists('token.pickle'):
+            logger.info("Loading credentials from token.pickle")
             with open('token.pickle', 'rb') as token:
                 creds = pickle.load(token)
 
         # If there are no (valid) credentials available, let the user log in
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
+                logger.info("Refreshing expired credentials")
                 creds.refresh(Request())
             else:
                 if not os.path.exists('credentials.json'):
@@ -1128,9 +1135,11 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
                 pickle.dump(creds, token)
 
         # Build the Gmail service (with cache disabled to avoid discovery timeout)
+        logger.info("Building Gmail API service")
         service = build('gmail', 'v1', credentials=creds, cache_discovery=False)
 
         # Create message
+        logger.info("Creating email message")
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
         msg['From'] = f"Earnings Alert System <{sender_email}>"
@@ -1153,15 +1162,21 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         message_body = {'raw': raw_message}
 
         # Send the message
+        logger.info("Sending email via Gmail API")
         service.users().messages().send(userId='me', body=message_body).execute()
         logger.info(f" Email sent successfully via Gmail API to {len(recipients)} recipients")
         return True
 
     except HttpError as e:
-        logger.error(f" Gmail API error: {e}")
+        logger.error(f" Gmail API HTTP error: {e}")
+        return False
+    except socket.timeout as e:
+        logger.error(f" Gmail API socket timeout: {e}")
         return False
     except Exception as e:
-        logger.error(f" Failed to send email via Gmail API: {e}")
+        logger.error(f" Failed to send email via Gmail API: {type(e).__name__}: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
         return False
 
 def send_email_gmail_smtp(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
