@@ -1127,8 +1127,8 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
             with open('token.pickle', 'wb') as token:
                 pickle.dump(creds, token)
 
-        # Build the Gmail service
-        service = build('gmail', 'v1', credentials=creds)
+        # Build the Gmail service (with cache disabled to avoid discovery timeout)
+        service = build('gmail', 'v1', credentials=creds, cache_discovery=False)
 
         # Create message
         msg = MIMEMultipart('alternative')
