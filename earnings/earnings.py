@@ -1039,22 +1039,53 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
 
     return html_content
 
-def send_email_gmail(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
-    """Send email using Gmail SMTP with optional HTML attachment"""
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.mime.base import MIMEBase
-    from email import encoders
-
-    sender_email = EMAIL_CONFIG['sender_email']
-    sender_password = EMAIL_CONFIG['sender_password']
-
-    if not sender_email or not sender_password:
-        print("❌ Gmail credentials not found in environment variables")
+def send_email_gmail_api(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
+    """Send email using Gmail API (uses HTTPS, works when SMTP ports are blocked)"""
+    try:
+        from google.oauth2.credentials import Credentials
+        from google_auth_oauthlib.flow import InstalledAppFlow
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+        import base64
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.base import MIMEBase
+        from email import encoders
+        import pickle
+    except ImportError:
+        print("❌ Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client")
         return False
 
+    SCOPES = ['https://www.googleapis.com/auth/gmail.send']
+    sender_email = EMAIL_CONFIG['sender_email']
+
     try:
+        creds = None
+        # Token file stores the user's access and refresh tokens
+        if os.path.exists('token.pickle'):
+            with open('token.pickle', 'rb') as token:
+                creds = pickle.load(token)
+
+        # If there are no (valid) credentials available, let the user log in
+        if not creds or not creds.valid:
+            if creds and creds.expired and creds.refresh_token:
+                creds.refresh(Request())
+            else:
+                if not os.path.exists('credentials.json'):
+                    print("❌ credentials.json not found. Please download OAuth2 credentials from Google Cloud Console")
+                    print("   See setup instructions in the README")
+                    return False
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+
+            # Save the credentials for the next run
+            with open('token.pickle', 'wb') as token:
+                pickle.dump(creds, token)
+
+        # Build the Gmail service
+        service = build('gmail', 'v1', credentials=creds)
+
         # Create message
         msg = MIMEMultipart('alternative')
         msg['Subject'] = subject
@@ -1073,17 +1104,108 @@ def send_email_gmail(subject, html_content, recipients, attachment_html=None, at
             attachment.add_header('Content-Disposition', f'attachment; filename={attachment_filename}')
             msg.attach(attachment)
 
-        # Connect to Gmail SMTP server
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, recipients, msg.as_string())
+        # Encode the message
+        raw_message = base64.urlsafe_b64encode(msg.as_bytes()).decode('utf-8')
+        message_body = {'raw': raw_message}
 
-        print(f"✅ Email sent successfully via Gmail to {len(recipients)} recipients")
+        # Send the message
+        service.users().messages().send(userId='me', body=message_body).execute()
+        print(f"✅ Email sent successfully via Gmail API to {len(recipients)} recipients")
         return True
 
-    except Exception as e:
-        print(f"❌ Failed to send email via Gmail: {e}")
+    except HttpError as e:
+        print(f"❌ Gmail API error: {e}")
         return False
+    except Exception as e:
+        print(f"❌ Failed to send email via Gmail API: {e}")
+        return False
+
+def send_email_gmail_smtp(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
+    """Send email using Gmail SMTP with optional HTML attachment"""
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.mime.base import MIMEBase
+    from email import encoders
+
+    sender_email = EMAIL_CONFIG['sender_email']
+    sender_password = EMAIL_CONFIG['sender_password']
+
+    if not sender_email or not sender_password:
+        print("❌ Gmail credentials not found in environment variables")
+        return False
+
+    # Try port 465 first, then 587
+    ports = [
+        (465, 'SMTP_SSL', 'smtplib.SMTP_SSL'),
+        (587, 'STARTTLS', 'smtplib.SMTP')
+    ]
+
+    for port, method, _ in ports:
+        try:
+            # Create message
+            msg = MIMEMultipart('alternative')
+            msg['Subject'] = subject
+            msg['From'] = f"Earnings Alert System <{sender_email}>"
+            msg['To'] = ', '.join(recipients)
+
+            # Attach HTML content
+            html_part = MIMEText(html_content, 'html')
+            msg.attach(html_part)
+
+            # Add attachment if provided
+            if attachment_html and attachment_filename:
+                attachment = MIMEBase('text', 'html')
+                attachment.set_payload(attachment_html.encode('utf-8'))
+                encoders.encode_base64(attachment)
+                attachment.add_header('Content-Disposition', f'attachment; filename={attachment_filename}')
+                msg.attach(attachment)
+
+            # Connect to Gmail SMTP server
+            if port == 465:
+                import smtplib
+                server = smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=10)
+                server.login(sender_email, sender_password)
+                server.sendmail(sender_email, recipients, msg.as_string())
+                server.quit()
+            else:
+                import smtplib
+                server = smtplib.SMTP('smtp.gmail.com', 587, timeout=10)
+                server.starttls()
+                server.login(sender_email, sender_password)
+                server.sendmail(sender_email, recipients, msg.as_string())
+                server.quit()
+
+            print(f"✅ Email sent successfully via Gmail SMTP (port {port}) to {len(recipients)} recipients")
+            return True
+
+        except Exception as e:
+            print(f"⚠️  Failed to send via SMTP port {port} ({method}): {e}")
+            if port == ports[-1][0]:  # Last port in the list
+                print(f"❌ All SMTP ports failed")
+                return False
+            else:
+                print(f"🔄 Trying next port...")
+                continue
+
+    return False
+
+def send_email_gmail(subject, html_content, recipients, attachment_html=None, attachment_filename=None):
+    """Send email using Gmail with automatic fallback: SMTP -> Gmail API -> Save to file"""
+
+    # Try SMTP first (faster if available)
+    print("📧 Attempting to send email via Gmail SMTP...")
+    if send_email_gmail_smtp(subject, html_content, recipients, attachment_html, attachment_filename):
+        return True
+
+    # Fall back to Gmail API (works when SMTP ports are blocked)
+    print("🔄 SMTP failed, trying Gmail API...")
+    if send_email_gmail_api(subject, html_content, recipients, attachment_html, attachment_filename):
+        return True
+
+    # Both methods failed
+    print("❌ Both Gmail SMTP and API failed")
+    return False
 
 def save_to_file(subject, html_content):
     """Save report to file as fallback"""
