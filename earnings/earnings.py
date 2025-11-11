@@ -1148,6 +1148,7 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         from email.mime.base import MIMEBase
         from email import encoders
         import pickle
+        import httplib2
     except ImportError:
         logger.error(" Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client")
         return False
@@ -1158,8 +1159,8 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
     try:
         import socket
 
-        # Set global socket timeout to prevent hanging
-        socket.setdefaulttimeout(30)
+        # Set global socket timeout to prevent hanging (increased for large emails)
+        socket.setdefaulttimeout(120)
 
         creds = None
         # Token file stores the user's access and refresh tokens
@@ -1187,7 +1188,10 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
 
         # Build the Gmail service (with cache disabled to avoid discovery timeout)
         logger.info("Building Gmail API service")
-        service = build('gmail', 'v1', credentials=creds, cache_discovery=False)
+        # Create HTTP client with explicit timeout for large message handling
+        http = httplib2.Http(timeout=180)
+        http = creds.authorize(http)
+        service = build('gmail', 'v1', http=http, cache_discovery=False)
 
         # Create message
         logger.info("Creating email message")
@@ -1216,10 +1220,10 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         message_body = {'raw': raw_message}
 
         # Send the message (with extended timeout)
-        logger.info("Sending email via Gmail API (this may take 30-60 seconds for large messages)")
+        logger.info("Sending email via Gmail API (this may take up to 2 minutes for large messages)")
         import socket
         original_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(90)  # Extended timeout for large messages
+        socket.setdefaulttimeout(180)  # Extended timeout for large messages (3 minutes)
         try:
             service.users().messages().send(userId='me', body=message_body).execute()
         finally:
