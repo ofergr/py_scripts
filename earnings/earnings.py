@@ -168,18 +168,25 @@ async def get_major_index_constituents_async(session):
             if response.status == 200:
                 html = await response.text()
                 import re
-                # Try different patterns
+                # Try different patterns (ordered by likelihood of success with current Wikipedia structure)
                 patterns = [
-                    r'<td><a[^>]*>([A-Z]{1,5})</a></td>',  # Original pattern
-                    r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',  # More flexible
+                    r'<tr>.*?<td[^>]*>([A-Z]{1,5})</td>',  # Plain td pattern (works for current NASDAQ 100 structure)
+                    r'<td><a[^>]*>([A-Z]{1,5})</a></td>',  # Original pattern with links
+                    r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',  # More flexible with links
                     r'>([A-Z]{2,5})</a></td>',  # Simpler pattern
                     r'<a[^>]*title="[^"]*">([A-Z]{2,5})</a>',  # With title attribute
                 ]
 
                 for pattern in patterns:
-                    matches = re.findall(pattern, html)
-                    # Filter out common false positives
-                    filtered = [m for m in matches if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV', 'WIKI']]
+                    matches = re.findall(pattern, html, re.DOTALL if 'tr>' in pattern else 0)
+                    # Filter out common false positives and deduplicate
+                    seen = set()
+                    filtered = []
+                    for m in matches:
+                        if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV', 'WIKI', 'INDEX'] and m not in seen:
+                            filtered.append(m)
+                            seen.add(m)
+
                     if len(filtered) >= 90:  # NASDAQ 100 should have ~100 symbols
                         nasdaq100_symbols = set(filtered[:110])  # Take first 110 to be safe
                         logger.info(f" Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
