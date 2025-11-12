@@ -126,30 +126,71 @@ async def get_major_index_constituents_async(session):
     # Fetch S&P 500 from Wikipedia
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
             if response.status == 200:
                 html = await response.text()
-                # Simple parsing - look for ticker symbols in the first table
+                # Multiple regex patterns to handle different HTML structures
                 import re
-                # Match ticker patterns in table cells
-                matches = re.findall(r'<td><a[^>]*>([A-Z]{1,5})</a></td>', html)
-                sp500_symbols = set(matches[:500])  # Take first 500 matches
-                logger.info(f" Found {len(sp500_symbols)} S&P 500 symbols")
+                # Try different patterns
+                patterns = [
+                    r'<td><a[^>]*>([A-Z]{1,5})</a></td>',  # Original pattern
+                    r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',  # More flexible
+                    r'>([A-Z]{2,5})</a></td>',  # Simpler pattern
+                    r'<a[^>]*title="[^"]*">([A-Z]{2,5})</a>',  # With title attribute
+                ]
+
+                for pattern in patterns:
+                    matches = re.findall(pattern, html)
+                    # Filter out common false positives
+                    filtered = [m for m in matches if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV']]
+                    if len(filtered) >= 400:  # S&P 500 should have ~500 symbols
+                        sp500_symbols = set(filtered[:510])  # Take first 510 to be safe
+                        logger.info(f" Found {len(sp500_symbols)} S&P 500 symbols")
+                        break
+
+                if not sp500_symbols:
+                    logger.warning(f" Could not parse S&P 500 symbols from Wikipedia (tried {len(patterns)} patterns)")
+            else:
+                logger.warning(f" Wikipedia S&P 500 page returned status {response.status}")
     except Exception as e:
-        logger.warning(f" Could not fetch S&P 500 list: {str(e)[:50]}")
+        logger.warning(f" Could not fetch S&P 500 list: {str(e)[:100]}")
 
     # Fetch NASDAQ 100 from Wikipedia
     try:
         url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as response:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
             if response.status == 200:
                 html = await response.text()
                 import re
-                matches = re.findall(r'<td><a[^>]*>([A-Z]{1,5})</a></td>', html)
-                nasdaq100_symbols = set(matches[:100])  # Take first 100 matches
-                logger.info(f" Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
+                # Try different patterns
+                patterns = [
+                    r'<td><a[^>]*>([A-Z]{1,5})</a></td>',  # Original pattern
+                    r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',  # More flexible
+                    r'>([A-Z]{2,5})</a></td>',  # Simpler pattern
+                    r'<a[^>]*title="[^"]*">([A-Z]{2,5})</a>',  # With title attribute
+                ]
+
+                for pattern in patterns:
+                    matches = re.findall(pattern, html)
+                    # Filter out common false positives
+                    filtered = [m for m in matches if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV', 'WIKI']]
+                    if len(filtered) >= 90:  # NASDAQ 100 should have ~100 symbols
+                        nasdaq100_symbols = set(filtered[:110])  # Take first 110 to be safe
+                        logger.info(f" Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
+                        break
+
+                if not nasdaq100_symbols:
+                    logger.warning(f" Could not parse NASDAQ 100 symbols from Wikipedia (tried {len(patterns)} patterns)")
+            else:
+                logger.warning(f" Wikipedia NASDAQ 100 page returned status {response.status}")
     except Exception as e:
-        logger.warning(f" Could not fetch NASDAQ 100 list: {str(e)[:50]}")
+        logger.warning(f" Could not fetch NASDAQ 100 list: {str(e)[:100]}")
 
     # For Russell 2000, we'll use a simplified approach - any symbol not in S&P 500/NASDAQ 100
     # with market cap between $300M - $10B is likely Russell 2000
@@ -1148,9 +1189,8 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         from email.mime.base import MIMEBase
         from email import encoders
         import pickle
-        import httplib2
     except ImportError:
-        logger.error(" Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-auth-httplib2 google-api-python-client")
+        logger.error(" Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-api-python-client")
         return False
 
     SCOPES = ['https://www.googleapis.com/auth/gmail.send']
@@ -1186,50 +1226,130 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
             with open('token.pickle', 'wb') as token:
                 pickle.dump(creds, token)
 
-        # Build the Gmail service (with cache disabled to avoid discovery timeout)
-        logger.info("Building Gmail API service")
-        # Create HTTP client with explicit timeout for large message handling
-        http = httplib2.Http(timeout=180)
-        http = creds.authorize(http)
+        # Build the Gmail service with proper timeout configuration
+        logger.info("Building Gmail API service with 45s timeout")
+        # Create HTTP client with timeout
+        import google.auth.transport.requests
+        import google_auth_httplib2
+        import httplib2
+
+        # Configure HTTP client with 45s timeout (enough for large emails)
+        http = httplib2.Http(timeout=45)
+        http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
+
+        # Build service with custom HTTP client
         service = build('gmail', 'v1', http=http, cache_discovery=False)
 
-        # Create message
-        logger.info("Creating email message")
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = subject
-        msg['From'] = f"Earnings Alert System <{sender_email}>"
-        msg['To'] = ', '.join(recipients)
-
-        # Attach HTML content
-        html_part = MIMEText(html_content, 'html')
-        msg.attach(html_part)
-
-        # Add attachment if provided
-        if attachment_html and attachment_filename:
-            attachment = MIMEBase('text', 'html')
-            attachment.set_payload(attachment_html.encode('utf-8'))
-            encoders.encode_base64(attachment)
-            attachment.add_header('Content-Disposition', f'attachment; filename={attachment_filename}')
-            msg.attach(attachment)
-
-        # Encode the message
-        msg_bytes = msg.as_bytes()
-        msg_size_kb = len(msg_bytes) / 1024
-        logger.info(f"Message size: {msg_size_kb:.1f} KB")
-        raw_message = base64.urlsafe_b64encode(msg_bytes).decode('utf-8')
-        message_body = {'raw': raw_message}
-
-        # Send the message (with extended timeout)
-        logger.info("Sending email via Gmail API (this may take up to 2 minutes for large messages)")
+        # Send individual emails to each recipient to avoid timeout
+        logger.info(f"Sending emails to {len(recipients)} recipients individually")
         import socket
+        import time
+
         original_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(180)  # Extended timeout for large messages (3 minutes)
+        socket.setdefaulttimeout(45)  # 45 second timeout per email
+
+        sent_count = 0
+        failed_recipients = []
+
         try:
-            service.users().messages().send(userId='me', body=message_body).execute()
+            for i, recipient in enumerate(recipients, 1):
+                try:
+                    # Create message for this recipient
+                    logger.info(f"Creating email message for recipient {i}/{len(recipients)}: {recipient}")
+                    start_time = time.time()
+
+                    msg = MIMEMultipart('alternative')
+                    msg['Subject'] = subject
+                    msg['From'] = f"Earnings Alert System <{sender_email}>"
+                    msg['To'] = recipient
+
+                    # Attach HTML content
+                    html_part = MIMEText(html_content, 'html')
+                    msg.attach(html_part)
+
+                    # Add attachment if provided
+                    if attachment_html and attachment_filename:
+                        attachment = MIMEBase('text', 'html')
+                        attachment.set_payload(attachment_html.encode('utf-8'))
+                        encoders.encode_base64(attachment)
+                        attachment.add_header('Content-Disposition', f'attachment; filename={attachment_filename}')
+                        msg.attach(attachment)
+
+                    # Encode the message
+                    msg_bytes = msg.as_bytes()
+                    if i == 1:  # Log size only for first email
+                        msg_size_kb = len(msg_bytes) / 1024
+                        logger.info(f"Message size: {msg_size_kb:.1f} KB")
+
+                    encode_start = time.time()
+                    raw_message = base64.urlsafe_b64encode(msg_bytes).decode('utf-8')
+                    message_body = {'raw': raw_message}
+                    logger.info(f"Message encoding took {time.time() - encode_start:.1f}s")
+
+                    # Send the message with detailed timing
+                    api_start = time.time()
+                    logger.info(f"Calling Gmail API send (timeout: 45s)...")
+                    service.users().messages().send(userId='me', body=message_body).execute()
+                    api_time = time.time() - api_start
+
+                    logger.info(f" Email {i}/{len(recipients)} sent successfully to {recipient} (API call: {api_time:.1f}s, total: {time.time() - start_time:.1f}s)")
+                    sent_count += 1
+
+                    # Add delay between sends to avoid rate limiting (except after last email)
+                    if i < len(recipients):
+                        logger.info(f"Waiting 5 seconds before next recipient...")
+                        time.sleep(5)
+
+                except Exception as e:
+                    logger.error(f" Failed to send email to {recipient}: {type(e).__name__}: {e}")
+
+                    # If attachment was included, try sending without it
+                    if attachment_html and attachment_filename:
+                        try:
+                            logger.info(f"Retrying without attachment for {recipient}...")
+                            retry_start = time.time()
+
+                            # Create simpler message without attachment
+                            msg_simple = MIMEMultipart('alternative')
+                            msg_simple['Subject'] = subject + " (attachment too large - see full report file)"
+                            msg_simple['From'] = f"Earnings Alert System <{sender_email}>"
+                            msg_simple['To'] = recipient
+                            html_part = MIMEText(html_content, 'html')
+                            msg_simple.attach(html_part)
+
+                            # Encode and send
+                            msg_bytes_simple = msg_simple.as_bytes()
+                            logger.info(f"Retry message size: {len(msg_bytes_simple) / 1024:.1f} KB (was {msg_size_kb:.1f} KB)")
+                            raw_message_simple = base64.urlsafe_b64encode(msg_bytes_simple).decode('utf-8')
+                            message_body_simple = {'raw': raw_message_simple}
+
+                            service.users().messages().send(userId='me', body=message_body_simple).execute()
+                            retry_time = time.time() - retry_start
+                            logger.info(f" Email sent to {recipient} WITHOUT attachment (retry took {retry_time:.1f}s)")
+                            sent_count += 1
+
+                            if i < len(recipients):
+                                logger.info(f"Waiting 5 seconds before next recipient...")
+                                time.sleep(5)
+                            continue
+
+                        except Exception as retry_e:
+                            logger.error(f" Retry also failed for {recipient}: {type(retry_e).__name__}: {retry_e}")
+
+                    failed_recipients.append(recipient)
+                    continue
+
         finally:
             socket.setdefaulttimeout(original_timeout)
-        logger.info(f" Email sent successfully via Gmail API to {len(recipients)} recipients")
-        return True
+
+        if sent_count > 0:
+            logger.info(f" Successfully sent {sent_count}/{len(recipients)} emails via Gmail API")
+            if failed_recipients:
+                logger.warning(f" Failed recipients: {', '.join(failed_recipients)}")
+            return True
+        else:
+            logger.error(" Failed to send any emails via Gmail API")
+            return False
 
     except HttpError as e:
         logger.error(f" Gmail API HTTP error: {e}")
