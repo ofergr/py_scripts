@@ -73,6 +73,10 @@ EMAIL_CONFIG = {
     'email_service': os.getenv('EMAIL_SERVICE', 'gmail')
 }
 
+# Gmail API timeout configuration (in seconds)
+# Increased for slow networks - adjust if needed
+GMAIL_API_TIMEOUT = 120
+
 # Logo.dev API configuration
 LOGO_DEV_TOKEN = os.getenv('LOGO_DEV_TOKEN', '')
 
@@ -1206,8 +1210,8 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
     try:
         import socket
 
-        # Set global socket timeout to prevent hanging (increased for large emails)
-        socket.setdefaulttimeout(120)
+        # Set global socket timeout to prevent hanging
+        socket.setdefaulttimeout(GMAIL_API_TIMEOUT)
 
         creds = None
         # Token file stores the user's access and refresh tokens
@@ -1222,26 +1226,26 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
                 logger.info("Refreshing expired credentials")
                 creds.refresh(Request())
             else:
-                if not os.path.exists('credentials.json'):
-                    logger.error(" credentials.json not found. Please download OAuth2 credentials from Google Cloud Console")
-                    logger.info("   See setup instructions in the README")
-                    return False
-                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
+                # Don't try to open browser on headless server
+                logger.error(" No valid credentials found. Please authenticate:")
+                logger.error("   1. Run 'python3 authenticate_gmail.py' on a machine with a browser")
+                logger.error("   2. Copy token.pickle to this server")
+                logger.error("   3. Place it in the same directory as earnings.py")
+                return False
 
             # Save the credentials for the next run
             with open('token.pickle', 'wb') as token:
                 pickle.dump(creds, token)
 
         # Build the Gmail service with proper timeout configuration
-        logger.info("Building Gmail API service with 45s timeout")
+        logger.info(f"Building Gmail API service with {GMAIL_API_TIMEOUT}s timeout")
         # Create HTTP client with timeout
         import google.auth.transport.requests
         import google_auth_httplib2
         import httplib2
 
-        # Configure HTTP client with 45s timeout (enough for large emails)
-        http = httplib2.Http(timeout=45)
+        # Configure HTTP client with custom timeout
+        http = httplib2.Http(timeout=GMAIL_API_TIMEOUT)
         http = google_auth_httplib2.AuthorizedHttp(creds, http=http)
 
         # Build service with custom HTTP client
@@ -1253,7 +1257,7 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         import time
 
         original_timeout = socket.getdefaulttimeout()
-        socket.setdefaulttimeout(45)  # 45 second timeout per email
+        socket.setdefaulttimeout(GMAIL_API_TIMEOUT)
 
         sent_count = 0
         failed_recipients = []
@@ -1295,7 +1299,7 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
 
                     # Send the message with detailed timing
                     api_start = time.time()
-                    logger.info(f"Calling Gmail API send (timeout: 45s)...")
+                    logger.info(f"Calling Gmail API send (timeout: {GMAIL_API_TIMEOUT}s)...")
                     service.users().messages().send(userId='me', body=message_body).execute()
                     api_time = time.time() - api_start
 
