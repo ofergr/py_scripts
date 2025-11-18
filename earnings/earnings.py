@@ -238,7 +238,6 @@ def is_in_major_index(symbol, market_cap, index_cache):
 def apply_filters(earnings_data, index_cache):
     """Apply filtering criteria to earnings data"""
     filtered = []
-    failed_index_companies = []  # Track companies that failed index filter
     stats = {
         'total': len(earnings_data),
         'failed_market_cap': 0,
@@ -268,13 +267,6 @@ def apply_filters(earnings_data, index_cache):
         in_index, index_name = is_in_major_index(symbol, market_cap, index_cache)
         if FILTER_CONFIG['require_major_index'] and not in_index:
             stats['failed_index'] += 1
-            # Log details about companies that failed index filter
-            failed_index_companies.append({
-                'symbol': symbol,
-                'company': company.get('company', 'N/A'),
-                'market_cap': market_cap,
-                'analyst_count': analyst_count
-            })
             continue
 
         # Filter 4: Stock price (filter out penny stocks < $5)
@@ -286,13 +278,6 @@ def apply_filters(earnings_data, index_cache):
         company['index'] = index_name
         filtered.append(company)
         stats['passed'] += 1
-
-    # Log companies that failed index filter
-    if failed_index_companies:
-        logger.info("\n🚫 Companies that failed index membership filter:")
-        for comp in failed_index_companies:
-            market_cap_b = comp['market_cap'] / 1_000_000_000
-            logger.info(f"   {comp['symbol']:6s} - {comp['company'][:40]:40s} | ${market_cap_b:6.1f}B | {comp['analyst_count']} analysts")
 
     return filtered, stats
 
@@ -1227,6 +1212,10 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
 
         # Set global socket timeout to prevent hanging
         socket.setdefaulttimeout(GMAIL_API_TIMEOUT)
+
+        # Force IPv4 to avoid IPv6 routing issues (Cloudflare outage fallout)
+        original_getaddrinfo = socket.getaddrinfo
+        socket.getaddrinfo = lambda host, port, family=0, *args: original_getaddrinfo(host, port, socket.AF_INET, *args)
 
         creds = None
         # Token file stores the user's access and refresh tokens
