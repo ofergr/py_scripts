@@ -43,9 +43,21 @@ import asyncio
 import aiohttp
 from dotenv import load_dotenv
 import logging
+import socket
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Force IPv4-only to avoid IPv6 timeout issues
+# Store original getaddrinfo
+_original_getaddrinfo = socket.getaddrinfo
+
+def _ipv4_only_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    """Force all socket connections to use IPv4 only"""
+    return _original_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+# Monkey-patch socket.getaddrinfo to force IPv4
+socket.getaddrinfo = _ipv4_only_getaddrinfo
 
 # Configure logging
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'logs')
@@ -61,6 +73,9 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Log IPv4-only mode
+logger.info("IPv4-only mode enabled for all network connections")
 
 # Suppress google auth file_cache warnings
 logging.getLogger('googleapiclient.discovery_cache').setLevel(logging.ERROR)
@@ -1212,10 +1227,6 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
 
         # Set global socket timeout to prevent hanging
         socket.setdefaulttimeout(GMAIL_API_TIMEOUT)
-
-        # Force IPv4 to avoid IPv6 routing issues (Cloudflare outage fallout)
-        original_getaddrinfo = socket.getaddrinfo
-        socket.getaddrinfo = lambda host, port, family=0, *args: original_getaddrinfo(host, port, socket.AF_INET, *args)
 
         creds = None
         # Token file stores the user's access and refresh tokens
