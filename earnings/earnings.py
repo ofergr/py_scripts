@@ -1215,6 +1215,7 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
         from email.mime.base import MIMEBase
         from email import encoders
         import pickle
+        from datetime import datetime, timedelta
     except ImportError:
         logger.error(" Gmail API libraries not installed. Install with: pip install google-auth-oauthlib google-api-python-client")
         return False
@@ -1224,24 +1225,47 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
 
     try:
         import socket
-
-        # Set global socket timeout to prevent hanging
         socket.setdefaulttimeout(GMAIL_API_TIMEOUT)
 
         creds = None
-        # Token file stores the user's access and refresh tokens
-        if os.path.exists('token.pickle'):
+        token_file = 'token.pickle'
+
+        # Load existing credentials
+        if os.path.exists(token_file):
             logger.info("Loading credentials from token.pickle")
-            with open('token.pickle', 'rb') as token:
+            with open(token_file, 'rb') as token:
                 creds = pickle.load(token)
 
-        # If there are no (valid) credentials available, let the user log in
+       # Check if token will expire soon (within 5 minutes) and refresh proactively
+        if creds and creds.valid and creds.expiry:
+            from datetime import datetime, timedelta
+            if creds.expiry < datetime.utcnow() + timedelta(minutes=5):
+                logger.info("Token expiring soon, refreshing proactively")
+                try:
+                    creds.refresh(Request())
+                    with open(token_file, 'wb') as token:
+                        pickle.dump(creds, token)
+                    logger.info("Token refreshed proactively and saved")
+                except Exception as e:
+                    logger.warning(f"Proactive refresh failed: {e}")
+
+        # Handle invalid or expired credentials
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
-                logger.info("Refreshing expired credentials")
-                creds.refresh(Request())
+                logger.info("Token expiring soon, refreshing proactively")
+                try:
+                    creds.refresh(Request())
+                    with open('token.pickle', 'wb') as token:
+                        pickle.dump(creds, token)
+                        logger.info("Credentials refreshed and saved successfully")
+                except Exception as refresh_error:
+                    logger.error(f"Failed to refresh token: {refresh_error}")
+                    logger.error("Token may have been revoked. Please re-authenticate:")
+                    logger.error("   1. Delete token.pickle")
+                    logger.error("   2. Run 'python3 authenticate_gmail.py'")
+                    logger.error("   3. Copy new token.pickle to this server")
+                    return False
             else:
-                # Don't try to open browser on headless server
                 logger.error(" No valid credentials found. Please authenticate:")
                 logger.error("   1. Run 'python3 authenticate_gmail.py' on a machine with a browser")
                 logger.error("   2. Copy token.pickle to this server")
@@ -1378,11 +1402,21 @@ def send_email_gmail_api(subject, html_content, recipients, attachment_html=None
             return False
 
     except HttpError as e:
-        logger.error(f" Gmail API HTTP error: {e}")
+        if e.resp.status in [401, 403]:
+            logger.error(f" Gmail API authentication failed (HTTP {e.resp.status})")
+            logger.error(" Token may have been revoked or expired")
+            logger.error(" To fix this:")
+            logger.error("   1. Delete token.pickle file")
+            logger.error("   2. Run 'python3 authenticate_gmail.py' on a machine with a browser")
+            logger.error("   3. Copy the new token.pickle to this server")
+        else:
+            logger.error(f" Gmail API HTTP error {e.resp.status}: {e}")
         return False
+
     except socket.timeout as e:
         logger.error(f" Gmail API socket timeout: {e}")
         return False
+
     except Exception as e:
         logger.error(f" Failed to send email via Gmail API: {type(e).__name__}: {e}")
         import traceback
