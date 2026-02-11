@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "2.3"
+VERSION = "3.0"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -107,9 +107,18 @@ recommendation_weights = {
 # FILTERING THRESHOLDS
 FILTER_CONFIG = {
     'min_market_cap': 1_000_000_000,  # $1 billion (small/mid-cap threshold)
-    'min_analysts': 5,  # Minimum analyst coverage
+    'min_analysts': 0,  # AI provides single-source analysis; no minimum needed
     'require_major_index': True,  # Must be in S&P 500, NASDAQ 100, or Russell 2000
     'min_stock_price': 5.0  # Minimum stock price (filters out penny stocks)
+}
+
+# Ollama AI Configuration
+OLLAMA_CONFIG = {
+    'base_url': os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'),
+    'model': os.getenv('OLLAMA_MODEL', 'gpt-oss:20b'),
+    'timeout': 120,  # seconds per request
+    'max_retries': 2,
+    'enabled': True,  # Auto-disabled at runtime if Ollama is unreachable
 }
 
 # Cache for major index constituents
@@ -142,79 +151,63 @@ async def get_major_index_constituents_async(session):
     nasdaq100_symbols = set()
     russell2000_symbols = set()
 
+    # Use requests (not aiohttp) for Wikipedia — aiohttp gets 403'd by Wikipedia
+    import re
+    wiki_headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        'Accept': 'text/html',
+    }
+
     # Fetch S&P 500 from Wikipedia
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
-            if response.status == 200:
-                html = await response.text()
-                # Multiple regex patterns to handle different HTML structures
-                import re
-                # Try different patterns
-                patterns = [
-                    r'<td><a[^>]*>([A-Z]{1,5})</a></td>',  # Original pattern
-                    r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',  # More flexible
-                    r'>([A-Z]{2,5})</a></td>',  # Simpler pattern
-                    r'<a[^>]*title="[^"]*">([A-Z]{2,5})</a>',  # With title attribute
-                ]
-
-                for pattern in patterns:
-                    matches = re.findall(pattern, html)
-                    # Filter out common false positives
-                    filtered = [m for m in matches if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV']]
-                    if len(filtered) >= 400:  # S&P 500 should have ~500 symbols
-                        sp500_symbols = set(filtered[:510])  # Take first 510 to be safe
-                        logger.info(f" Found {len(sp500_symbols)} S&P 500 symbols")
-                        break
-
-                if not sp500_symbols:
-                    logger.warning(f" Could not parse S&P 500 symbols from Wikipedia (tried {len(patterns)} patterns)")
-            else:
-                logger.warning(f" Wikipedia S&P 500 page returned status {response.status}")
+        resp = requests.get(url, headers=wiki_headers, timeout=15)
+        if resp.status_code == 200:
+            patterns = [
+                r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',
+                r'<td><a[^>]*>([A-Z]{1,5})</a></td>',
+                r'<a[^>]*title="[^"]*">([A-Z]{2,5})</a>',
+            ]
+            for pattern in patterns:
+                matches = re.findall(pattern, resp.text)
+                filtered = [m for m in matches if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV']]
+                if len(filtered) >= 400:
+                    sp500_symbols = set(filtered[:510])
+                    logger.info(f" Found {len(sp500_symbols)} S&P 500 symbols")
+                    break
+            if not sp500_symbols:
+                logger.warning(f" Could not parse S&P 500 symbols from Wikipedia")
+        else:
+            logger.warning(f" Wikipedia S&P 500 page returned status {resp.status_code}")
     except Exception as e:
         logger.warning(f" Could not fetch S&P 500 list: {str(e)[:100]}")
 
     # Fetch NASDAQ 100 from Wikipedia
     try:
         url = "https://en.wikipedia.org/wiki/Nasdaq-100"
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
-            if response.status == 200:
-                html = await response.text()
-                import re
-                # Try different patterns (ordered by likelihood of success with current Wikipedia structure)
-                patterns = [
-                    r'<tr>.*?<td[^>]*>([A-Z]{1,5})</td>',  # Plain td pattern (works for current NASDAQ 100 structure)
-                    r'<td><a[^>]*>([A-Z]{1,5})</a></td>',  # Original pattern with links
-                    r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>',  # More flexible with links
-                    r'>([A-Z]{2,5})</a></td>',  # Simpler pattern
-                    r'<a[^>]*title="[^"]*">([A-Z]{2,5})</a>',  # With title attribute
-                ]
-
-                for pattern in patterns:
-                    matches = re.findall(pattern, html, re.DOTALL if 'tr>' in pattern else 0)
-                    # Filter out common false positives and deduplicate
-                    seen = set()
-                    filtered = []
-                    for m in matches:
-                        if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV', 'WIKI', 'INDEX'] and m not in seen:
-                            filtered.append(m)
-                            seen.add(m)
-
-                    if len(filtered) >= 90:  # NASDAQ 100 should have ~100 symbols
-                        nasdaq100_symbols = set(filtered[:110])  # Take first 110 to be safe
-                        logger.info(f" Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
-                        break
-
-                if not nasdaq100_symbols:
-                    logger.warning(f" Could not parse NASDAQ 100 symbols from Wikipedia (tried {len(patterns)} patterns)")
-            else:
-                logger.warning(f" Wikipedia NASDAQ 100 page returned status {response.status}")
+        resp = requests.get(url, headers=wiki_headers, timeout=15)
+        if resp.status_code == 200:
+            patterns = [
+                (r'<tr>.*?<td[^>]*>([A-Z]{1,5})</td>', re.DOTALL),
+                (r'<td[^>]*><a[^>]*>([A-Z]{1,5})</a>', 0),
+                (r'<td><a[^>]*>([A-Z]{1,5})</a></td>', 0),
+            ]
+            for pattern, flags in patterns:
+                matches = re.findall(pattern, resp.text, flags)
+                seen = set()
+                filtered = []
+                for m in matches:
+                    if m not in ['NYSE', 'NASDAQ', 'GICS', 'SEC', 'PDF', 'CSV', 'WIKI', 'INDEX'] and m not in seen:
+                        filtered.append(m)
+                        seen.add(m)
+                if len(filtered) >= 90:
+                    nasdaq100_symbols = set(filtered[:110])
+                    logger.info(f" Found {len(nasdaq100_symbols)} NASDAQ 100 symbols")
+                    break
+            if not nasdaq100_symbols:
+                logger.warning(f" Could not parse NASDAQ 100 symbols from Wikipedia")
+        else:
+            logger.warning(f" Wikipedia NASDAQ 100 page returned status {resp.status_code}")
     except Exception as e:
         logger.warning(f" Could not fetch NASDAQ 100 list: {str(e)[:100]}")
 
@@ -243,11 +236,6 @@ def is_in_major_index(symbol, market_cap, index_cache):
     if index_cache['nasdaq100'] and symbol_upper in index_cache['nasdaq100']:
         return True, 'NASDAQ 100'
 
-    # Heuristic for Russell 2000: mid-cap stocks not in S&P 500 or NASDAQ 100
-    if market_cap and 300_000_000 <= market_cap <= 10_000_000_000:
-        if symbol_upper not in index_cache['sp500'] and symbol_upper not in index_cache['nasdaq100']:
-            return True, 'Russell 2000 (estimated)'
-
     return False, None
 
 def apply_filters(earnings_data, index_cache):
@@ -273,8 +261,8 @@ def apply_filters(earnings_data, index_cache):
             stats['failed_market_cap'] += 1
             continue
 
-        # Filter 2: Analyst coverage (must have 5+ analysts)
-        if analyst_count < FILTER_CONFIG['min_analysts']:
+        # Filter 2: Analyst coverage (skipped when AI analysis is enabled)
+        if not OLLAMA_CONFIG['enabled'] and analyst_count < FILTER_CONFIG['min_analysts']:
             stats['failed_analyst_coverage'] += 1
             continue
 
@@ -468,28 +456,6 @@ def calculate_consensus_rating(strong_buy, buy, hold, sell, strong_sell):
 
     return consensus, total_analysts, confidence
 
-def get_synthetic_target_price(current_price, recommendation, eps):
-    """Generate synthetic target price when real data unavailable"""
-    if current_price is None:
-        return None
-
-    # Base multipliers for each recommendation
-    multipliers = {
-        'Strong Buy': (1.15, 1.25),  # 15-25% upside
-        'Buy': (1.08, 1.15),         # 8-15% upside
-        'Hold': (0.95, 1.05),        # -5% to +5%
-        'Sell': (0.85, 0.95),        # -15% to -5% downside
-        'Strong Sell': (0.75, 0.85)  # -25% to -15% downside
-    }
-
-    base_min, base_max = multipliers.get(recommendation, (0.95, 1.05))
-
-    # Simple average for synthetic target
-    multiplier = (base_min + base_max) / 2
-    target_price = current_price * multiplier
-
-    return round(target_price, 2)
-
 def get_yahoo_target_price(symbol):
     """Get target price from Yahoo Finance using yfinance (synchronous helper)"""
     try:
@@ -512,6 +478,336 @@ async def get_yahoo_target_price_async(symbol):
     """Get target price from Yahoo Finance using yfinance (async wrapper)"""
     # Run the synchronous yfinance call in a thread pool
     return await asyncio.to_thread(get_yahoo_target_price, symbol)
+
+def get_comprehensive_yfinance_data(symbol):
+    """Fetch comprehensive stock data from yfinance for AI analysis.
+
+    Returns dict with fundamentals, price history, and key ratios.
+    This data is used both for the report AND as context for the AI model.
+    """
+    try:
+        import yfinance as yf
+        ticker = yf.Ticker(symbol)
+        info = ticker.get_info()
+
+        # Fetch 30-day price history
+        hist = ticker.history(period='1mo')
+        price_history = []
+        if not hist.empty:
+            for date, row in hist.iterrows():
+                price_history.append({
+                    'date': date.strftime('%Y-%m-%d'),
+                    'close': round(row['Close'], 2),
+                    'volume': int(row['Volume']),
+                })
+
+        result = {
+            'current_price': info.get('currentPrice'),
+            'market_cap': info.get('marketCap'),
+            'sector': info.get('sector'),
+            'industry': info.get('industry'),
+            'trailing_pe': info.get('trailingPE'),
+            'forward_pe': info.get('forwardPE'),
+            'price_to_book': info.get('priceToBook'),
+            'price_to_sales': info.get('priceToSalesTrailing12Months'),
+            'profit_margins': info.get('profitMargins'),
+            'gross_margins': info.get('grossMargins'),
+            'operating_margins': info.get('operatingMargins'),
+            'return_on_equity': info.get('returnOnEquity'),
+            'revenue_growth': info.get('revenueGrowth'),
+            'earnings_growth': info.get('earningsGrowth'),
+            'earnings_quarterly_growth': info.get('earningsQuarterlyGrowth'),
+            'eps_trailing': info.get('epsTrailingTwelveMonths'),
+            'eps_forward': info.get('epsForward'),
+            'fifty_two_week_high': info.get('fiftyTwoWeekHigh'),
+            'fifty_two_week_low': info.get('fiftyTwoWeekLow'),
+            'fifty_day_average': info.get('fiftyDayAverage'),
+            'two_hundred_day_average': info.get('twoHundredDayAverage'),
+            'beta': info.get('beta'),
+            'debt_to_equity': info.get('debtToEquity'),
+            'current_ratio': info.get('currentRatio'),
+            'free_cashflow': info.get('freeCashflow'),
+            'dividend_yield': info.get('dividendYield'),
+            'yahoo_target_mean': info.get('targetMeanPrice'),
+            'price_history_30d': price_history,
+        }
+
+        logger.info(f"  Fetched comprehensive yfinance data for {symbol}")
+        return result
+
+    except Exception as e:
+        logger.warning(f"  yfinance comprehensive fetch failed for {symbol}: {str(e)[:80]}")
+        return None
+
+async def get_comprehensive_yfinance_data_async(symbol):
+    """Async wrapper for comprehensive yfinance data fetch."""
+    return await asyncio.to_thread(get_comprehensive_yfinance_data, symbol)
+
+def _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast):
+    """Build a formatted string of market data for the AI prompt."""
+
+    def fmt_pct(val):
+        if val is None:
+            return "N/A"
+        return f"{val * 100:.1f}%"
+
+    def fmt_price(val):
+        if val is None:
+            return "N/A"
+        return f"${val:,.2f}"
+
+    def fmt_num(val):
+        if val is None:
+            return "N/A"
+        if isinstance(val, float):
+            return f"{val:.2f}"
+        return str(val)
+
+    def fmt_market_cap(val):
+        if val is None:
+            return "N/A"
+        if val >= 1_000_000_000_000:
+            return f"${val/1_000_000_000_000:.1f}T"
+        elif val >= 1_000_000_000:
+            return f"${val/1_000_000_000:.1f}B"
+        elif val >= 1_000_000:
+            return f"${val/1_000_000:.0f}M"
+        return f"${val:,.0f}"
+
+    lines = [
+        f"Symbol: {symbol}",
+        f"Company: {company_name}",
+        f"Sector: {market_data.get('sector', 'N/A')}",
+        f"Industry: {market_data.get('industry', 'N/A')}",
+        "",
+        "PRICE & VALUATION:",
+        f"  Current Price: {fmt_price(market_data.get('current_price'))}",
+        f"  Market Cap: {fmt_market_cap(market_data.get('market_cap'))}",
+        f"  Trailing P/E: {fmt_num(market_data.get('trailing_pe'))}",
+        f"  Forward P/E: {fmt_num(market_data.get('forward_pe'))}",
+        f"  Price/Book: {fmt_num(market_data.get('price_to_book'))}",
+        f"  Price/Sales: {fmt_num(market_data.get('price_to_sales'))}",
+        "",
+        "PROFITABILITY:",
+        f"  Profit Margin: {fmt_pct(market_data.get('profit_margins'))}",
+        f"  Gross Margin: {fmt_pct(market_data.get('gross_margins'))}",
+        f"  Operating Margin: {fmt_pct(market_data.get('operating_margins'))}",
+        f"  Return on Equity: {fmt_pct(market_data.get('return_on_equity'))}",
+        "",
+        "GROWTH:",
+        f"  Revenue Growth (YoY): {fmt_pct(market_data.get('revenue_growth'))}",
+        f"  Earnings Growth (YoY): {fmt_pct(market_data.get('earnings_growth'))}",
+        f"  Quarterly Earnings Growth: {fmt_pct(market_data.get('earnings_quarterly_growth'))}",
+        "",
+        "EARNINGS:",
+        f"  EPS (TTM): {fmt_price(market_data.get('eps_trailing'))}",
+        f"  EPS (Forward): {fmt_price(market_data.get('eps_forward'))}",
+        f"  EPS Forecast (this quarter): {fmt_price(eps_forecast) if eps_forecast else 'N/A'}",
+        "",
+        "PRICE CONTEXT:",
+        f"  52-Week High: {fmt_price(market_data.get('fifty_two_week_high'))}",
+        f"  52-Week Low: {fmt_price(market_data.get('fifty_two_week_low'))}",
+        f"  50-Day Avg: {fmt_price(market_data.get('fifty_day_average'))}",
+        f"  200-Day Avg: {fmt_price(market_data.get('two_hundred_day_average'))}",
+        f"  Beta: {fmt_num(market_data.get('beta'))}",
+        "",
+        "FINANCIAL HEALTH:",
+        f"  Debt/Equity: {fmt_num(market_data.get('debt_to_equity'))}",
+        f"  Current Ratio: {fmt_num(market_data.get('current_ratio'))}",
+        f"  Dividend Yield: {fmt_pct(market_data.get('dividend_yield'))}",
+    ]
+
+    # Add price history summary
+    price_history = market_data.get('price_history_30d', [])
+    if price_history and len(price_history) >= 2:
+        first_price = price_history[0]['close']
+        last_price = price_history[-1]['close']
+        change_pct = ((last_price - first_price) / first_price) * 100
+        high_30d = max(p['close'] for p in price_history)
+        low_30d = min(p['close'] for p in price_history)
+        lines.extend([
+            "",
+            "30-DAY PRICE TREND:",
+            f"  30-Day Change: {change_pct:+.1f}%",
+            f"  30-Day High: {fmt_price(high_30d)}",
+            f"  30-Day Low: {fmt_price(low_30d)}",
+            f"  Trend: {'Upward' if change_pct > 2 else 'Downward' if change_pct < -2 else 'Sideways'}",
+        ])
+
+    return "\n".join(lines)
+
+
+def _parse_ai_response(content, symbol):
+    """Parse the AI model's JSON response into the standard analyst_data format."""
+    import json
+    import re
+
+    if not content or not content.strip():
+        return None
+
+    # Try direct JSON parse first
+    try:
+        data = json.loads(content.strip())
+        return _validate_ai_result(data, symbol)
+    except json.JSONDecodeError:
+        pass
+
+    # Try extracting JSON from markdown code block
+    code_block_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+    if code_block_match:
+        try:
+            data = json.loads(code_block_match.group(1))
+            return _validate_ai_result(data, symbol)
+        except json.JSONDecodeError:
+            pass
+
+    # Try finding any JSON object with recommendation key
+    json_match = re.search(r'\{[^{}]*"recommendation"[^{}]*\}', content, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group(0))
+            return _validate_ai_result(data, symbol)
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(f"  Could not parse AI response for {symbol}: {content[:200]}")
+    return None
+
+
+def _validate_ai_result(data, symbol):
+    """Validate and normalize the parsed AI response into the standard format."""
+
+    valid_recommendations = {"Strong Buy", "Buy", "Hold", "Sell", "Strong Sell"}
+    valid_confidences = {"High", "Medium", "Low"}
+
+    recommendation = data.get('recommendation', 'Hold')
+    if recommendation not in valid_recommendations:
+        rec_lower = recommendation.lower().strip()
+        rec_map = {
+            'strong buy': 'Strong Buy', 'strongbuy': 'Strong Buy',
+            'buy': 'Buy',
+            'hold': 'Hold', 'neutral': 'Hold',
+            'sell': 'Sell',
+            'strong sell': 'Strong Sell', 'strongsell': 'Strong Sell',
+        }
+        recommendation = rec_map.get(rec_lower, 'Hold')
+
+    confidence = data.get('confidence', 'Medium')
+    if confidence not in valid_confidences:
+        conf_map = {
+            'high': 'High',
+            'medium': 'Medium',
+            'low': 'Low',
+        }
+        confidence = conf_map.get(str(confidence).lower().strip(), 'Medium')
+
+    target_price = data.get('target_price')
+    if target_price is not None:
+        try:
+            target_price = round(float(target_price), 2)
+            if target_price <= 0:
+                target_price = None
+        except (ValueError, TypeError):
+            target_price = None
+
+    reasoning = data.get('reasoning', '')
+    if not isinstance(reasoning, str):
+        reasoning = str(reasoning) if reasoning else ''
+
+    return {
+        'recommendation': recommendation,
+        'total_analysts': 1,
+        'source': 'AI Analysis (Ollama)',
+        'confidence': confidence,
+        'target_price': target_price,
+        'target_source': 'AI Analysis',
+        'market_cap': None,  # Filled by caller
+        'ai_reasoning': reasoning,
+    }
+
+
+def get_ai_fallback_data(symbol, market_data=None):
+    """Fallback when AI analysis fails. Returns a conservative Hold recommendation."""
+    logger.warning(f"  Using AI fallback for {symbol}")
+
+    target_price = None
+    if market_data and market_data.get('yahoo_target_mean'):
+        target_price = round(market_data['yahoo_target_mean'], 2)
+
+    return {
+        'recommendation': 'Hold',
+        'total_analysts': 0,
+        'source': 'AI Fallback (No Analysis)',
+        'confidence': 'Low',
+        'target_price': target_price,
+        'target_source': 'Yahoo Finance' if target_price else 'N/A',
+        'market_cap': market_data.get('market_cap') if market_data else None,
+        'ai_reasoning': 'AI analysis was unavailable. Defaulting to Hold.',
+    }
+
+
+async def get_ai_analysis_async(session, symbol, company_name, market_data, eps_forecast):
+    """Get AI-powered stock analysis from Ollama local model."""
+    if not OLLAMA_CONFIG['enabled'] or market_data is None:
+        return get_ai_fallback_data(symbol, market_data)
+
+    prompt_data = _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast)
+
+    system_prompt = """You are a senior equity research analyst at a top-tier investment bank.
+You analyze stocks based on fundamental data, valuation metrics, price trends, and upcoming earnings.
+You must respond ONLY with valid JSON. No markdown, no explanation outside the JSON."""
+
+    user_prompt = f"""Analyze {symbol} ({company_name}) ahead of their upcoming earnings report.
+
+MARKET DATA:
+{prompt_data}
+
+Based on this data, provide your pre-earnings recommendation.
+
+Respond with EXACTLY this JSON structure (no other text):
+{{"recommendation": "<one of: Strong Buy, Buy, Hold, Sell, Strong Sell>", "confidence": "<one of: High, Medium, Low>", "target_price": <number - your 12-month price target>, "reasoning": "<2-3 concise sentences explaining your recommendation>"}}"""
+
+    for attempt in range(OLLAMA_CONFIG['max_retries'] + 1):
+        try:
+            payload = {
+                "model": OLLAMA_CONFIG['model'],
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                "stream": False,
+                "options": {"temperature": 0}
+            }
+
+            url = f"{OLLAMA_CONFIG['base_url']}/api/chat"
+            timeout = aiohttp.ClientTimeout(total=OLLAMA_CONFIG['timeout'])
+
+            async with session.post(url, json=payload, timeout=timeout) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    content = result.get('message', {}).get('content', '')
+
+                    ai_result = _parse_ai_response(content, symbol)
+                    if ai_result:
+                        ai_result['market_cap'] = market_data.get('market_cap')
+                        logger.info(f"  AI analysis for {symbol}: {ai_result['recommendation']} "
+                                   f"(confidence: {ai_result['confidence']}, "
+                                   f"target: ${ai_result.get('target_price', 'N/A')})")
+                        return ai_result
+                    else:
+                        logger.warning(f"  Failed to parse AI response for {symbol}, attempt {attempt+1}")
+                else:
+                    logger.warning(f"  Ollama returned status {response.status} for {symbol}")
+
+        except asyncio.TimeoutError:
+            logger.warning(f"  Ollama timeout for {symbol}, attempt {attempt+1}")
+        except aiohttp.ClientError as e:
+            logger.warning(f"  Ollama connection error for {symbol}: {str(e)[:50]}")
+        except Exception as e:
+            logger.warning(f"  Ollama error for {symbol}: {str(e)[:80]}")
+
+    logger.warning(f"  AI analysis failed for {symbol} after {OLLAMA_CONFIG['max_retries']+1} attempts, using fallback")
+    return get_ai_fallback_data(symbol, market_data)
 
 async def get_real_analyst_data_async(session, symbol):
     """Get real analyst ratings, price targets, and market cap from Finnhub API (async)"""
@@ -636,58 +932,73 @@ def get_fallback_analyst_data(symbol, eps=None):
         'target_source': 'N/A'
     }
 
-async def fetch_company_data(session, row, semaphore):
-    """Fetch all data for a single company in parallel (async)"""
-    async with semaphore:  # Limit concurrent requests
-        symbol = row.get('symbol', 'N/A')
-        company_name = row.get('name', 'N/A')
+async def fetch_market_data(session, row, api_semaphore):
+    """Phase 1: Fetch market data + logo in parallel. Fast, no AI."""
+    symbol = row.get('symbol', 'N/A')
+    company_name = row.get('name', 'N/A')
 
-        # Parse EPS value
-        eps_value = row.get('epsForecast', '')
-        eps_parsed = None
-        if eps_value and eps_value != '':
-            try:
-                eps_clean = eps_value.replace('$', '').replace('(', '-').replace(')', '')
-                eps_parsed = float(eps_clean) if eps_clean else None
-            except:
-                eps_parsed = None
+    # Parse EPS value
+    eps_value = row.get('epsForecast', '')
+    eps_parsed = None
+    if eps_value and eps_value != '':
+        try:
+            eps_clean = eps_value.replace('$', '').replace('(', '-').replace(')', '')
+            eps_parsed = float(eps_clean) if eps_clean else None
+        except:
+            eps_parsed = None
 
-        # Fetch all data sources in parallel for this company
+    async with api_semaphore:
         tasks = [
-            get_stock_info_async(session, symbol),
-            get_real_analyst_data_async(session, symbol),
-            get_company_logo_async(session, symbol)
+            get_comprehensive_yfinance_data_async(symbol),
+            get_company_logo_async(session, symbol),
         ]
-
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Unpack results
-        stock_price, industry, yahoo_market_cap = results[0] if not isinstance(results[0], Exception) else (None, None, None)
-        analyst_data = results[1] if not isinstance(results[1], Exception) else get_fallback_analyst_data(symbol)
-        logo_url = results[2] if not isinstance(results[2], Exception) else None
+    market_data = results[0] if not isinstance(results[0], Exception) else None
+    logo_url = results[1] if not isinstance(results[1], Exception) else None
 
-        # Get target price and market cap from analyst data
-        target_price = analyst_data.get('target_price')
-        target_source = analyst_data.get('target_source', 'N/A')
-        market_cap = analyst_data.get('market_cap') or yahoo_market_cap  # Prefer Finnhub, fallback to Yahoo
+    stock_price = market_data.get('current_price') if market_data else None
+    industry = market_data.get('sector') if market_data else None
+    yahoo_market_cap = market_data.get('market_cap') if market_data else None
 
-        # Get news link (synchronous, very fast)
-        news_data = get_news_link(symbol, company_name)
+    return {
+        'symbol': symbol,
+        'company': company_name,
+        'time': row.get('time', 'time-not-supplied'),
+        'eps': eps_parsed,
+        'eps_raw': eps_value,
+        'stock_price': stock_price,
+        'industry': industry,
+        'market_cap': yahoo_market_cap,
+        'logo_url': logo_url,
+        '_market_data': market_data,  # kept for AI phase
+    }
 
-        return {
-            'symbol': symbol,
-            'company': company_name,
-            'time': row.get('time', 'time-not-supplied'),
-            'eps': eps_parsed,
-            'eps_raw': eps_value,
-            'analyst_data': analyst_data,
-            'news': news_data,
-            'stock_price': stock_price,
-            'target_price': target_price,
-            'industry': industry,
-            'market_cap': market_cap,
-            'logo_url': logo_url
-        }
+
+async def run_ai_analysis(session, company, ollama_semaphore):
+    """Phase 2: Run AI analysis for a single pre-filtered company (sequential)."""
+    symbol = company['symbol']
+    company_name = company['company']
+    market_data = company.pop('_market_data', None)
+    eps_parsed = company.get('eps')
+
+    async with ollama_semaphore:
+        if OLLAMA_CONFIG['enabled']:
+            analyst_data = await get_ai_analysis_async(
+                session, symbol, company_name, market_data, eps_parsed
+            )
+        else:
+            analyst_data = await get_real_analyst_data_async(session, symbol)
+
+    target_price = analyst_data.get('target_price')
+    market_cap = analyst_data.get('market_cap') or company.get('market_cap')
+    news_data = get_news_link(symbol, company_name)
+
+    company['analyst_data'] = analyst_data
+    company['news'] = news_data
+    company['target_price'] = target_price
+    company['market_cap'] = market_cap
+    return company
 
 
 async def get_nasdaq_earnings_async(target_date=None):
@@ -716,34 +1027,26 @@ async def get_nasdaq_earnings_async(target_date=None):
                     earnings_data = []
                     if 'data' in data and 'rows' in data['data'] and data['data']['rows'] is not None:
                         rows = data['data']['rows']
-                        logger.info(f" Found {len(rows)} companies, fetching data in parallel...")
-                        logger.info(f"⚡ Using async parallelization for 50x speed improvement!")
+                        logger.info(f" Found {len(rows)} companies, fetching market data in parallel...")
 
-                        # Create semaphore to limit concurrent requests (avoid overwhelming APIs)
-                        semaphore = asyncio.Semaphore(50)  # 50 concurrent requests max
+                        # --- PHASE 1: Parallel market data fetch for ALL companies (fast) ---
+                        api_semaphore = asyncio.Semaphore(50)
+                        market_tasks = [fetch_market_data(session, row, api_semaphore) for row in rows]
 
-                        # Create tasks for all companies
-                        tasks = [fetch_company_data(session, row, semaphore) for row in rows]
-
-                        # Execute all tasks in parallel with progress updates
                         start_time = time.time()
-                        earnings_data = await asyncio.gather(*tasks, return_exceptions=True)
+                        all_companies = await asyncio.gather(*market_tasks, return_exceptions=True)
+                        all_companies = [c for c in all_companies if not isinstance(c, Exception)]
 
-                        # Filter out exceptions
-                        earnings_data = [e for e in earnings_data if not isinstance(e, Exception)]
+                        market_elapsed = time.time() - start_time
+                        logger.info(f" Fetched market data for {len(all_companies)} companies in {market_elapsed:.1f}s")
 
-                        elapsed = time.time() - start_time
-                        logger.info(f" Fetched {len(earnings_data)} companies in {elapsed:.1f} seconds!")
-                        logger.info(f" Average: {elapsed/len(earnings_data):.2f}s per company")
-
-                        # APPLY FILTERS
-                        logger.info("\n🔍 Applying filters...")
+                        # --- PRE-FILTER: Apply filters BEFORE expensive AI analysis ---
+                        logger.info("\n🔍 Pre-filtering before AI analysis...")
                         logger.info(f"   - Market Cap: >= ${FILTER_CONFIG['min_market_cap']:,.0f} (Mid/Large-cap)")
-                        logger.info(f"   - Analyst Coverage: >= {FILTER_CONFIG['min_analysts']} analysts")
                         logger.info(f"   - Major Index: S&P 500, NASDAQ 100, or Russell 2000")
                         logger.info(f"   - Stock Price: >= ${FILTER_CONFIG['min_stock_price']:.2f} (No penny stocks)")
 
-                        filtered_data, filter_stats = apply_filters(earnings_data, index_cache)
+                        filtered_data, filter_stats = apply_filters(all_companies, index_cache)
 
                         logger.info(f"\n📊 Filter Results:")
                         logger.info(f"   Total companies: {filter_stats['total']}")
@@ -753,20 +1056,36 @@ async def get_nasdaq_earnings_async(target_date=None):
                         logger.info(f"   ❌ Failed stock price filter: {filter_stats['failed_stock_price']}")
                         logger.info(f"   ✅ Passed all filters: {filter_stats['passed']}")
 
+                        # --- PHASE 2: AI analysis ONLY for filtered companies (sequential, slow) ---
+                        if OLLAMA_CONFIG['enabled']:
+                            logger.info(f"\n🤖 Running AI analysis on {len(filtered_data)} filtered companies ({OLLAMA_CONFIG['model']})...")
+                        else:
+                            logger.info(f"\n📊 Fetching Finnhub analyst data for {len(filtered_data)} filtered companies...")
+
+                        ollama_semaphore = asyncio.Semaphore(1)
+                        ai_tasks = [run_ai_analysis(session, company, ollama_semaphore) for company in filtered_data]
+
+                        ai_start = time.time()
+                        earnings_data = await asyncio.gather(*ai_tasks, return_exceptions=True)
+                        earnings_data = [e for e in earnings_data if not isinstance(e, Exception)]
+
+                        ai_elapsed = time.time() - ai_start
+                        total_elapsed = time.time() - start_time
+                        logger.info(f" AI analysis completed in {ai_elapsed:.1f}s ({ai_elapsed/max(len(earnings_data),1):.1f}s/company)")
+                        logger.info(f" Total pipeline: {total_elapsed:.1f}s (market: {market_elapsed:.1f}s + AI: {ai_elapsed:.1f}s)")
+
                         # SORT BY RECOMMENDATION PRIORITY
                         logger.info("\n🔄 Sorting companies by recommendation priority...")
-                        filtered_data.sort(key=get_recommendation_weight)
+                        earnings_data.sort(key=get_recommendation_weight)
 
                         # Print sorted order for verification
                         logger.info("\n📋 Final filtered & sorted list:")
-                        for i, company in enumerate(filtered_data):
+                        for i, company in enumerate(earnings_data):
                             rec = company['analyst_data']['recommendation']
                             index = company.get('index', 'N/A')
                             market_cap_b = company.get('market_cap', 0) / 1_000_000_000
                             analysts = company['analyst_data']['total_analysts']
                             logger.info(f"  {i+1}. {company['symbol']:6} - {rec:12} | {index:25} | ${market_cap_b:6.1f}B | {analysts} analysts")
-
-                        earnings_data = filtered_data
                     else:
                         logger.info("️  No companies found reporting earnings tomorrow")
 
@@ -859,6 +1178,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
         total_analysts = analyst_data.get('total_analysts', 0)
         source = analyst_data.get('source', '')
         confidence = analyst_data.get('confidence', '')
+        ai_reasoning = analyst_data.get('ai_reasoning', '')
 
         # Map recommendations to icons and colors
         rec_icon = "❓"
@@ -910,17 +1230,24 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
         news_safe = f'<a href="{news_url}" target="_blank" style="color: #007bff; text-decoration: none; font-size: 11px;">{news_summary[:20]}...</a>'
 
         company_rows += f"""
+        <tr>
+            <td style="padding: 8px 8px 4px; width: 7%;">{symbol_safe}</td>
+            <td style="padding: 8px 8px 4px; width: 15%;">{company_with_logo}</td>
+            <td style="padding: 8px 8px 4px; text-align: center; width: 7%;">{time_safe}</td>
+            <td style="padding: 8px 8px 4px; text-align: center; width: 8%;">{price_safe}</td>
+            <td style="padding: 8px 8px 4px; text-align: center; width: 11%;">{target_safe}</td>
+            <td style="padding: 8px 8px 4px; text-align: center; width: 7%;">{eps_safe}</td>
+            <td style="padding: 8px 8px 4px; width: 13%;">{industry_safe}</td>
+            <td style="padding: 8px 8px 4px; width: 10%;">{rec_safe}</td>
+            <td style="padding: 8px 8px 4px; width: 10%;">{conf_safe}</td>
+            <td style="padding: 8px 8px 4px; width: 12%;">{news_safe}</td>
+        </tr>
         <tr style="border-bottom: 1px solid #e9ecef;">
-            <td style="padding: 8px; width: 6%;">{symbol_safe}</td>
-            <td style="padding: 8px; width: 14%;">{company_with_logo}</td>
-            <td style="padding: 8px; text-align: center; width: 7%;">{time_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 7%;">{price_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 9%;">{target_safe}</td>
-            <td style="padding: 8px; text-align: center; width: 6%;">{eps_safe}</td>
-            <td style="padding: 8px; width: 12%;">{industry_safe}</td>
-            <td style="padding: 8px; width: 10%;">{rec_safe}</td>
-            <td style="padding: 8px; width: 10%;">{conf_safe}</td>
-            <td style="padding: 8px; width: 19%;">{news_safe}</td>
+            <td colspan="10" style="padding: 0 8px 10px 8px;">
+                <div style="font-size: 11px; color: #555; line-height: 1.4; background: #f8f9fa; padding: 6px 10px; border-radius: 6px; word-wrap: break-word;">
+                    <span style="font-weight: 600; color: #666; font-size: 10px; text-transform: uppercase;">AI Insight</span>&nbsp;&nbsp;{ai_reasoning if ai_reasoning else 'No AI insight available.'}
+                </div>
+            </td>
         </tr>
         """
 
@@ -965,6 +1292,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                     <span class="card-value">{conf_safe}</span>
                 </div>
             </div>
+            {'<div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #e9ecef;"><span class="card-label" style="width: auto; display: block; margin-bottom: 4px;">AI INSIGHT</span><span style="font-size: 11px; color: #555; line-height: 1.4;">' + ai_reasoning + '</span></div>' if ai_reasoning else ''}
             <div class="card-news">
                 <a href="{news_url}" target="_blank">📰 {news_summary[:25]}...</a>
             </div>
@@ -1124,19 +1452,19 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                     <h2 style="margin: 0; font-size: 28px; font-weight: bold;">📈 Companies Reporting Tomorrow{f' (Showing {len(display_earnings)} of {len(earnings_data)})' if truncated_count > 0 else ''}</h2>
                     {f'<p style="margin: 10px 0 0 0; font-size: 14px; opacity: 0.9;">⚠️ Email shows top {len(display_earnings)} companies. {truncated_count} additional companies - see attached full report.</p>' if truncated_count > 0 else ''}
                 </div>
-                <table style="width: 100%; border-collapse: collapse;">
+                <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
                     <thead>
                         <tr style="background: #f8f9fa;">
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 6%;">Symbol</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 14%;">Company</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 7%;">Symbol</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 15%;">Company</th>
                             <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 7%;">Time</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 7%;">Price</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 9%;">Target</th>
-                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 6%;">EPS</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">Industry</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 8%;">Price</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 11%;">Target</th>
+                            <th style="padding: 8px; text-align: center; font-weight: bold; color: #333; font-size: 12px; width: 7%;">EPS</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 13%;">Industry</th>
                             <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 10%;">Rating</th>
                             <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 10%;">Confidence</th>
-                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 19%;">News</th>
+                            <th style="padding: 8px; text-align: left; font-weight: bold; color: #333; font-size: 12px; width: 12%;">News</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -1162,9 +1490,9 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                     <div><span style="font-size: 18px;">❓</span> No Data Available</div>
                 </div>
                 <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                    * Recommendations from Finnhub real analyst consensus data<br>
-                    * Target prices from Finnhub or Yahoo Finance when available<br>
-                    * News links direct to financial news sources for each stock<br>
+                    * Recommendations from AI analysis (Ollama {OLLAMA_CONFIG['model']})<br>
+                    * AI analysis based on fundamental data, valuation metrics, and price trends from Yahoo Finance<br>
+                    * Target prices generated by AI model based on comprehensive market data<br>
                     * Companies are sorted by recommendation priority (Strong Buy first, Strong Sell last)
                 </div>
             </div>
@@ -1176,7 +1504,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                     <strong>This report includes only high-quality companies that meet ALL of the following criteria:</strong>
                     <div style="margin-top: 10px; line-height: 1.8;">
                         ✓ <strong>Market Cap:</strong> Minimum ${FILTER_CONFIG['min_market_cap'] / 1_000_000_000:.1f} billion (mid/large-cap stocks)<br>
-                        ✓ <strong>Analyst Coverage:</strong> Minimum {FILTER_CONFIG['min_analysts']} analysts following the company<br>
+                        ✓ <strong>Analysis:</strong> AI-powered analysis using Ollama ({OLLAMA_CONFIG['model']})<br>
                         ✓ <strong>Index Membership:</strong> Must be in S&P 500, NASDAQ 100, or Russell 2000<br>
                         ✓ <strong>Stock Price:</strong> Minimum ${FILTER_CONFIG['min_stock_price']:.2f} per share (no penny stocks)<br>
                     </div>
@@ -1188,7 +1516,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
 
             <!-- Footer -->
             <div style="margin-top: 40px; padding-top: 25px; border-top: 3px solid #e9ecef; text-align: center; color: #666; font-size: 14px;">
-                <strong>📊 Data Source: NASDAQ</strong> • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
+                <strong>📊 Data Source: NASDAQ + Yahoo Finance + Ollama AI</strong> • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
                 EPS = Earnings Per Share (Analyst Estimates) • Pre-Market: Before 9:30 AM • After Hours: After 4:00 PM<br>
                 <br>
                 <strong>Earnings Report v{VERSION}</strong><br>
@@ -1540,6 +1868,26 @@ def validate_config():
     service = EMAIL_CONFIG['email_service']
     if service == 'gmail' and not EMAIL_CONFIG['sender_password']:
         errors.append("SENDER_PASSWORD is required when using Gmail service")
+
+    # Validate Ollama connectivity if enabled
+    if OLLAMA_CONFIG['enabled']:
+        try:
+            resp = requests.get(f"{OLLAMA_CONFIG['base_url']}/api/tags", timeout=5)
+            if resp.status_code == 200:
+                models = [m['name'] for m in resp.json().get('models', [])]
+                if OLLAMA_CONFIG['model'] not in models:
+                    logger.warning(f"  Ollama model '{OLLAMA_CONFIG['model']}' not found. "
+                                  f"Available: {models}. Falling back to Finnhub.")
+                    OLLAMA_CONFIG['enabled'] = False
+                else:
+                    logger.info(f"  Ollama connected: {OLLAMA_CONFIG['model']} ready")
+            else:
+                logger.warning(f"  Ollama returned status {resp.status_code}. Falling back to Finnhub.")
+                OLLAMA_CONFIG['enabled'] = False
+        except Exception as e:
+            logger.warning(f"  Cannot connect to Ollama at {OLLAMA_CONFIG['base_url']}: {e}. "
+                          f"Falling back to Finnhub.")
+            OLLAMA_CONFIG['enabled'] = False
 
     if errors:
         logger.error(" Configuration errors:")
