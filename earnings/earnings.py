@@ -115,7 +115,7 @@ FILTER_CONFIG = {
 # Ollama AI Configuration
 OLLAMA_CONFIG = {
     'base_url': os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'),
-    'model': os.getenv('OLLAMA_MODEL', 'gpt-oss:20b'),
+    'model': os.getenv('OLLAMA_MODEL', 'llama3.1:70b'),
     'timeout': 120,  # seconds per request
     'max_retries': 2,
     'enabled': True,  # Auto-disabled at runtime if Ollama is unreachable
