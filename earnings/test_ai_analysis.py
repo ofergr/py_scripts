@@ -235,6 +235,32 @@ class TestValidateAiResult:
             result = _validate_ai_result(data, "TEST")
             assert result['recommendation'] == rec
 
+    def test_reasoning_string_short_passes_through(self):
+        data = {"recommendation": "Buy", "reasoning": "Strong growth and margins."}
+        result = _validate_ai_result(data, "TEST")
+        assert result['ai_reasoning'] == "Strong growth and margins."
+
+    def test_reasoning_string_truncated_at_300_chars(self):
+        long_reasoning = "A" * 400
+        data = {"recommendation": "Buy", "reasoning": long_reasoning}
+        result = _validate_ai_result(data, "TEST")
+        assert len(result['ai_reasoning']) == 300
+        assert result['ai_reasoning'].endswith('...')
+
+    def test_reasoning_list_joined_and_truncated(self):
+        reasoning_list = ["Point one about fundamentals." * 5, "Point two about technicals." * 5]
+        data = {"recommendation": "Buy", "reasoning": reasoning_list}
+        result = _validate_ai_result(data, "TEST")
+        assert ' | ' in result['ai_reasoning'] or len(result['ai_reasoning']) <= 300
+        assert len(result['ai_reasoning']) <= 300
+
+    def test_reasoning_exactly_300_chars_not_truncated(self):
+        reasoning = "A" * 300
+        data = {"recommendation": "Buy", "reasoning": reasoning}
+        result = _validate_ai_result(data, "TEST")
+        assert result['ai_reasoning'] == reasoning
+        assert len(result['ai_reasoning']) == 300
+
 
 # ---------------------------------------------------------------------------
 # Tests: _build_ai_prompt_data
