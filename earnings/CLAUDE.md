@@ -57,7 +57,7 @@ tail -f logs/earnings_$(date +%Y%m%d).log
 ### External APIs & Services
 - **NASDAQ Calendar API**: Earnings schedule (public)
 - **Yahoo Finance (yfinance)**: Comprehensive market data — price, fundamentals, ratios, history (public)
-- **Ollama (local)**: AI-powered stock analysis (`OLLAMA_MODEL` in .env, default `gpt-oss:20b`)
+- **Ollama (local)**: AI-powered stock analysis (`OLLAMA_MODEL` in .env, default `llama3.1:8b`)
 - **Finnhub API**: Analyst recommendations fallback (`FINNHUB_IO_API_KEY` in .env)
 - **Logo.dev API**: Company logos (`LOGO_DEV_TOKEN` in .env, optional)
 - **Wikipedia**: S&P 500/NASDAQ 100 constituents (scraped)
@@ -74,7 +74,7 @@ FILTER_CONFIG = {
 
 OLLAMA_CONFIG = {
     'base_url': os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'),
-    'model': os.getenv('OLLAMA_MODEL', 'gpt-oss:20b'),
+    'model': os.getenv('OLLAMA_MODEL', 'llama3.1:8b'),
     'timeout': 120,
     'max_retries': 2,
     'enabled': True,  # Auto-disabled if Ollama unreachable
@@ -89,7 +89,7 @@ SENDER_PASSWORD=<16-char-app-password>
 RECIPIENTS=email1@example.com,email2@example.com
 FINNHUB_IO_API_KEY=your-api-key      # fallback when Ollama unavailable
 LOGO_DEV_TOKEN=your-key              # optional
-OLLAMA_MODEL=gpt-oss:20b             # optional, default shown
+OLLAMA_MODEL=llama3.1:8b             # optional, default shown
 OLLAMA_BASE_URL=http://localhost:11434 # optional, default shown
 ```
 

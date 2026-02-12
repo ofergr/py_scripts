@@ -115,7 +115,7 @@ FILTER_CONFIG = {
 # Ollama AI Configuration
 OLLAMA_CONFIG = {
     'base_url': os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434'),
-    'model': os.getenv('OLLAMA_MODEL', 'llama3.1:70b'),
+    'model': os.getenv('OLLAMA_MODEL', 'llama3.1:8b'),
     'timeout': 120,  # seconds per request
     'max_retries': 2,
     'enabled': True,  # Auto-disabled at runtime if Ollama is unreachable
@@ -711,7 +711,9 @@ def _validate_ai_result(data, symbol):
             target_price = None
 
     reasoning = data.get('reasoning', '')
-    if not isinstance(reasoning, str):
+    if isinstance(reasoning, list):
+        reasoning = ' | '.join(str(r) for r in reasoning if r)
+    elif not isinstance(reasoning, str):
         reasoning = str(reasoning) if reasoning else ''
 
     return {
@@ -753,19 +755,44 @@ async def get_ai_analysis_async(session, symbol, company_name, market_data, eps_
 
     prompt_data = _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast)
 
-    system_prompt = """You are a senior equity research analyst at a top-tier investment bank.
-You analyze stocks based on fundamental data, valuation metrics, price trends, and upcoming earnings.
-You must respond ONLY with valid JSON. No markdown, no explanation outside the JSON."""
+    system_prompt = """You are a cautious, skeptical senior equity research analyst. You protect investors from losses.
+Your job is to find reasons NOT to buy a stock, then see if the bull case is strong enough to overcome them.
+CRITICAL: Your entire response must be a single JSON object. Do NOT write any text before or after the JSON. Do NOT say "Here is" or explain anything. Start your response with { and end with }."""
 
     user_prompt = f"""Analyze {symbol} ({company_name}) ahead of their upcoming earnings report.
 
 MARKET DATA:
 {prompt_data}
 
-Based on this data, provide your pre-earnings recommendation.
+INSTRUCTIONS - Follow these steps IN ORDER before giving your recommendation:
 
-Respond with EXACTLY this JSON structure (no other text):
-{{"recommendation": "<one of: Strong Buy, Buy, Hold, Sell, Strong Sell>", "confidence": "<one of: High, Medium, Low>", "target_price": <number - your 12-month price target>, "reasoning": "<2-3 concise sentences explaining your recommendation>"}}"""
+STEP 1 - FUNDAMENTAL ANALYSIS:
+- Is the company profitable? Check profit margins and EPS. Negative EPS is a major red flag.
+- Are margins improving or declining? Compare operating/gross margins to sector norms.
+- Is revenue growing or shrinking? Declining revenue growth is bearish.
+- Is the valuation reasonable? High P/E with negative growth = overvalued. No P/E with losses = speculative.
+- Check debt/equity and current ratio for financial health risks.
+
+STEP 2 - TECHNICAL ANALYSIS:
+- Compare current price to 50-day and 200-day moving averages. Below both = bearish trend.
+- Where is price relative to 52-week high/low? Near the low = downtrend. Near the high = momentum.
+- What does the 30-day trend show? Downward trend into earnings is a warning sign.
+- Check beta for volatility risk.
+
+STEP 3 - BEAR CASE (list at least 2 specific risks based on the data above):
+- What could go wrong? Be specific using the actual numbers provided.
+- If EPS is negative, revenue is declining, or margins are shrinking, these MUST be listed as risks.
+
+STEP 4 - BULL CASE (list positives, if any):
+- What supports a buy? Use specific numbers.
+
+STEP 5 - VERDICT:
+- Weigh bear vs bull. Default to CAUTION — only recommend Buy/Strong Buy if bull case clearly outweighs bear case with strong numbers.
+- If fundamentals are weak (negative EPS, declining revenue, poor margins), do NOT recommend Buy regardless of narrative.
+- Set target_price based on fundamentals and technicals, not optimism. Use 52-week range and moving averages as anchors.
+
+Your ENTIRE response must be this JSON and nothing else. Start with {{ end with }}:
+{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": ["<fundamental analysis summary>", "<technical analysis summary>", "<bear case>", "<bull case>", "<final verdict explanation>"]}}"""
 
     for attempt in range(OLLAMA_CONFIG['max_retries'] + 1):
         try:
