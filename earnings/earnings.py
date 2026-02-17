@@ -715,8 +715,7 @@ def _validate_ai_result(data, symbol):
         reasoning = ' | '.join(str(r) for r in reasoning if r)
     elif not isinstance(reasoning, str):
         reasoning = str(reasoning) if reasoning else ''
-    if len(reasoning) > 300:
-        reasoning = reasoning[:297] + '...'
+    # No truncation — prompt instructs model to keep reasoning brief
 
     return {
         'recommendation': recommendation,
@@ -794,7 +793,7 @@ STEP 5 - VERDICT:
 - Set target_price based on fundamentals and technicals, not optimism. Use 52-week range and moving averages as anchors.
 
 Your ENTIRE response must be this JSON and nothing else. Start with {{ end with }}:
-{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<2-3 concise sentences summarizing your verdict, key risk, and key catalyst>"}}"""
+{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<MAXIMUM 2 SHORT sentences. First sentence: your verdict with the single most important number. Second sentence: the key risk or catalyst. Must fit under 350 characters total.>"}}"""
 
     for attempt in range(OLLAMA_CONFIG['max_retries'] + 1):
         try:

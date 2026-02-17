@@ -93,6 +93,20 @@ OLLAMA_MODEL=llama3.1:8b             # optional, default shown
 OLLAMA_BASE_URL=http://localhost:11434 # optional, default shown
 ```
 
+## AI Prompt Design
+
+The AI prompt uses a **skeptical financial analyst** persona with a 5-step analysis framework:
+1. Fundamental analysis (EPS, margins, revenue growth, valuation)
+2. Technical analysis (moving averages, 52-week range, 30-day trend)
+3. Bear case (minimum 2 specific risks from data)
+4. Bull case (positives if any)
+5. Verdict (default to caution — Buy only when bull clearly outweighs bear)
+
+Key design decisions:
+- **No reasoning truncation** — prompt instructs the model to produce short, precise reasoning (max ~350 chars, 2 sentences) rather than truncating long output mid-sentence
+- **Negative EPS / declining revenue must be flagged as risks** — prevents blindly optimistic recommendations
+- **Response is pure JSON** — no surrounding text, parsed via 3-tier extraction (direct → code block → regex)
+
 ## Key Implementation Details
 
 - **AI-powered analysis**: Each ticker analyzed by local Ollama model with ~30 fundamental data points
