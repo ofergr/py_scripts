@@ -45,8 +45,8 @@ from dotenv import load_dotenv
 import logging
 import socket
 
-# Load environment variables from .env file
-load_dotenv()
+# Load environment variables from .env file (use script directory, not cwd)
+load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
 
 # Force IPv4-only to avoid IPv6 timeout issues
 # Store original getaddrinfo
