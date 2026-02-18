@@ -94,6 +94,10 @@ GMAIL_API_TIMEOUT = 120
 
 # Logo.dev API configuration
 LOGO_DEV_TOKEN = os.getenv('LOGO_DEV_TOKEN', '')
+if LOGO_DEV_TOKEN:
+    logger.info(f"Logo.dev API token loaded ({len(LOGO_DEV_TOKEN)} chars)")
+else:
+    logger.warning("Logo.dev API token NOT found - logos will be disabled")
 
 # RECOMMENDATION SORTING WEIGHTS
 recommendation_weights = {
@@ -287,6 +291,7 @@ def apply_filters(earnings_data, index_cache):
 async def get_company_logo_async(session, symbol):
     """Get company logo from Logo.dev API (async)"""
     if not LOGO_DEV_TOKEN:
+        logger.warning(f"  Logo skipped for {symbol}: LOGO_DEV_TOKEN is empty")
         return None
 
     try:
@@ -299,16 +304,19 @@ async def get_company_logo_async(session, symbol):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
         }
 
-        async with session.get(logo_url, headers=headers, timeout=aiohttp.ClientTimeout(total=3)) as response:
+        async with session.get(logo_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
             if response.status == 200:
                 # Logo exists, return the URL without reading the image data
                 return logo_url
             else:
+                logger.warning(f"  Logo failed for {symbol}: HTTP {response.status}")
                 return None
 
     except asyncio.TimeoutError:
+        logger.warning(f"  Logo timeout for {symbol}")
         return None
     except Exception as e:
+        logger.warning(f"  Logo error for {symbol}: {type(e).__name__}: {e}")
         return None
 
 async def get_stock_info_async(session, symbol):
@@ -977,14 +985,10 @@ async def fetch_market_data(session, row, api_semaphore):
             eps_parsed = None
 
     async with api_semaphore:
-        tasks = [
-            get_comprehensive_yfinance_data_async(symbol),
-            get_company_logo_async(session, symbol),
-        ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    market_data = results[0] if not isinstance(results[0], Exception) else None
-    logo_url = results[1] if not isinstance(results[1], Exception) else None
+        try:
+            market_data = await get_comprehensive_yfinance_data_async(symbol)
+        except Exception:
+            market_data = None
 
     stock_price = market_data.get('current_price') if market_data else None
     industry = market_data.get('sector') if market_data else None
@@ -999,7 +1003,6 @@ async def fetch_market_data(session, row, api_semaphore):
         'stock_price': stock_price,
         'industry': industry,
         'market_cap': yahoo_market_cap,
-        'logo_url': logo_url,
         '_market_data': market_data,  # kept for AI phase
     }
 
@@ -1084,6 +1087,15 @@ async def get_nasdaq_earnings_async(target_date=None):
                         logger.info(f"   ❌ Failed index membership filter: {filter_stats['failed_index']}")
                         logger.info(f"   ❌ Failed stock price filter: {filter_stats['failed_stock_price']}")
                         logger.info(f"   ✅ Passed all filters: {filter_stats['passed']}")
+
+                        # --- Fetch logos ONLY for filtered companies (parallel, fast) ---
+                        async def fetch_logo(company):
+                            logo = await get_company_logo_async(session, company['symbol'])
+                            company['logo_url'] = logo
+
+                        await asyncio.gather(*[fetch_logo(c) for c in filtered_data])
+                        logo_count = sum(1 for c in filtered_data if c.get('logo_url'))
+                        logger.info(f"  Fetched logos for {logo_count}/{len(filtered_data)} filtered companies")
 
                         # --- PHASE 2: AI analysis ONLY for filtered companies (sequential, slow) ---
                         if OLLAMA_CONFIG['enabled']:
