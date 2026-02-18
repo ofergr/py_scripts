@@ -723,7 +723,8 @@ def _validate_ai_result(data, symbol):
         reasoning = ' | '.join(str(r) for r in reasoning if r)
     elif not isinstance(reasoning, str):
         reasoning = str(reasoning) if reasoning else ''
-    # No truncation — prompt instructs model to keep reasoning brief
+    if len(reasoning) > 300:
+        reasoning = reasoning[:297] + '...'
 
     return {
         'recommendation': recommendation,
@@ -764,8 +765,8 @@ async def get_ai_analysis_async(session, symbol, company_name, market_data, eps_
 
     prompt_data = _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast)
 
-    system_prompt = """You are a cautious, skeptical senior equity research analyst. You protect investors from losses.
-Your job is to find reasons NOT to buy a stock, then see if the bull case is strong enough to overcome them.
+    system_prompt = """You are an objective senior equity research analyst. You give balanced, evidence-based recommendations.
+Your job is to weigh both bull and bear cases fairly and recommend what the data actually supports — Buy, Hold, or Sell.
 CRITICAL: Your entire response must be a single JSON object. Do NOT write any text before or after the JSON. Do NOT say "Here is" or explain anything. Start your response with { and end with }."""
 
     user_prompt = f"""Analyze {symbol} ({company_name}) ahead of their upcoming earnings report.
@@ -776,32 +777,30 @@ MARKET DATA:
 INSTRUCTIONS - Follow these steps IN ORDER before giving your recommendation:
 
 STEP 1 - FUNDAMENTAL ANALYSIS:
-- Is the company profitable? Check profit margins and EPS. Negative EPS is a major red flag.
+- Is the company profitable? Check profit margins and EPS.
 - Are margins improving or declining? Compare operating/gross margins to sector norms.
-- Is revenue growing or shrinking? Declining revenue growth is bearish.
-- Is the valuation reasonable? High P/E with negative growth = overvalued. No P/E with losses = speculative.
-- Check debt/equity and current ratio for financial health risks.
+- Is revenue growing or shrinking?
+- Is the valuation reasonable relative to growth? High P/E with strong growth can be justified; high P/E with no growth is a concern.
+- Check debt/equity and current ratio for financial health.
 
 STEP 2 - TECHNICAL ANALYSIS:
-- Compare current price to 50-day and 200-day moving averages. Below both = bearish trend.
-- Where is price relative to 52-week high/low? Near the low = downtrend. Near the high = momentum.
-- What does the 30-day trend show? Downward trend into earnings is a warning sign.
-- Check beta for volatility risk.
+- Compare current price to 50-day and 200-day moving averages. Above both = bullish trend; below both = bearish trend.
+- Where is price relative to 52-week high/low? Near the high = momentum; near the low = potential value or downtrend.
+- What does the 30-day trend show?
+- Check beta for volatility.
 
-STEP 3 - BEAR CASE (list at least 2 specific risks based on the data above):
-- What could go wrong? Be specific using the actual numbers provided.
-- If EPS is negative, revenue is declining, or margins are shrinking, these MUST be listed as risks.
+STEP 3 - BEAR CASE (specific risks based on the data):
+- What could go wrong? Use actual numbers.
 
-STEP 4 - BULL CASE (list positives, if any):
-- What supports a buy? Use specific numbers.
+STEP 4 - BULL CASE (specific strengths based on the data):
+- What supports a positive outlook? Use actual numbers.
 
 STEP 5 - VERDICT:
-- Weigh bear vs bull. Default to CAUTION — only recommend Buy/Strong Buy if bull case clearly outweighs bear case with strong numbers.
-- If fundamentals are weak (negative EPS, declining revenue, poor margins), do NOT recommend Buy regardless of narrative.
-- Set target_price based on fundamentals and technicals, not optimism. Use 52-week range and moving averages as anchors.
+- Weigh bear vs bull objectively. Let the data lead — strong fundamentals and momentum warrant Buy/Strong Buy; weak fundamentals and deteriorating trends warrant Sell/Strong Sell; mixed signals warrant Hold.
+- Set target_price based on fundamentals and technicals. Use 52-week range and moving averages as anchors.
 
 Your ENTIRE response must be this JSON and nothing else. Start with {{ end with }}:
-{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<MAXIMUM 2 SHORT sentences. First sentence: your verdict with the single most important number. Second sentence: the key risk or catalyst. Must fit under 350 characters total.>"}}"""
+{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<2-3 concise sentences summarizing your verdict, key risk, and key catalyst>"}}"""
 
     for attempt in range(OLLAMA_CONFIG['max_retries'] + 1):
         try:
