@@ -305,11 +305,13 @@ async def get_company_logo_async(session, symbol):
         }
 
         async with session.get(logo_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-            if response.status == 200:
-                # Logo exists, return the URL without reading the image data
+            status = response.status
+            # Close immediately to avoid draining the PNG body (which can timeout)
+            response.close()
+            if status == 200:
                 return logo_url
             else:
-                logger.warning(f"  Logo failed for {symbol}: HTTP {response.status}")
+                logger.warning(f"  Logo failed for {symbol}: HTTP {status}")
                 return None
 
     except asyncio.TimeoutError:
