@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Version
-VERSION = "3.0"
+VERSION = "3.1"
 
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, module='requests')
@@ -123,6 +123,16 @@ OLLAMA_CONFIG = {
     'timeout': 120,  # seconds per request
     'max_retries': 2,
     'enabled': True,  # Auto-disabled at runtime if Ollama is unreachable
+}
+
+# Groq AI Configuration
+GROQ_CONFIG = {
+    'api_key': os.getenv('GROQ_API_KEY', ''),
+    'model': os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile'),
+    'enabled': False,  # Auto-enabled in validate_config() if API key present
+    'max_retries': 2,
+    'consecutive_429s': 0,  # Circuit breaker counter
+    'circuit_breaker_threshold': 2,  # Disable Groq after this many consecutive 429s
 }
 
 # Cache for major index constituents
@@ -553,7 +563,7 @@ async def get_comprehensive_yfinance_data_async(symbol):
     """Async wrapper for comprehensive yfinance data fetch."""
     return await asyncio.to_thread(get_comprehensive_yfinance_data, symbol)
 
-def _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast):
+def _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast, news_headlines=None):
     """Build a formatted string of market data for the AI prompt."""
 
     def fmt_pct(val):
@@ -644,6 +654,11 @@ def _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast):
             f"  Trend: {'Upward' if change_pct > 2 else 'Downward' if change_pct < -2 else 'Sideways'}",
         ])
 
+    if news_headlines:
+        lines.extend(["", "RECENT NEWS (last 7 days):"])
+        for i, headline in enumerate(news_headlines[:3], 1):
+            lines.append(f"  {i}. {headline}")
+
     return "\n".join(lines)
 
 
@@ -731,7 +746,7 @@ def _validate_ai_result(data, symbol):
     return {
         'recommendation': recommendation,
         'total_analysts': 1,
-        'source': 'AI Analysis (Ollama)',
+        'source': 'AI Analysis',
         'confidence': confidence,
         'target_price': target_price,
         'target_source': 'AI Analysis',
@@ -760,12 +775,12 @@ def get_ai_fallback_data(symbol, market_data=None):
     }
 
 
-async def get_ai_analysis_async(session, symbol, company_name, market_data, eps_forecast):
+async def get_ollama_analysis_async(session, symbol, company_name, market_data, eps_forecast, news_headlines=None):
     """Get AI-powered stock analysis from Ollama local model."""
     if not OLLAMA_CONFIG['enabled'] or market_data is None:
         return get_ai_fallback_data(symbol, market_data)
 
-    prompt_data = _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast)
+    prompt_data = _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast, news_headlines)
 
     system_prompt = """You are an objective senior equity research analyst. You give balanced, evidence-based recommendations.
 Your job is to weigh both bull and bear cases fairly and recommend what the data actually supports — Buy, Hold, or Sell.
@@ -797,12 +812,19 @@ STEP 3 - BEAR CASE (specific risks based on the data):
 STEP 4 - BULL CASE (specific strengths based on the data):
 - What supports a positive outlook? Use actual numbers.
 
-STEP 5 - VERDICT:
-- Weigh bear vs bull objectively. Let the data lead — strong fundamentals and momentum warrant Buy/Strong Buy; weak fundamentals and deteriorating trends warrant Sell/Strong Sell; mixed signals warrant Hold.
+STEP 5 - COMPANY & INDUSTRY CONTEXT (draw on your training knowledge, not just the numbers above):
+- What is this company's core business and competitive moat?
+- What sector tailwinds or headwinds are most relevant right now (AI adoption, rate sensitivity, regulation, competition, disruption)?
+- Does this company have pricing power, or is it a commodity player?
+- How does its strategic position affect the risk/reward of THIS earnings event specifically?
+
+STEP 6 - VERDICT:
+- Weigh all factors — data AND strategic context.
 - Set target_price based on fundamentals and technicals. Use 52-week range and moving averages as anchors.
+- For reasoning: write 2 sharp sentences combining the key data signal with a company-specific strategic insight. AVOID generic phrases like "strong margins" or "good fundamentals" — say WHY it matters for THIS company at THIS moment.
 
 Your ENTIRE response must be this JSON and nothing else. Start with {{ end with }}:
-{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<2-3 concise sentences summarizing your verdict, key risk, and key catalyst>"}}"""
+{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<2 sharp sentences: key data signal + company-specific strategic insight. No generic phrases.>"}}"""
 
     for attempt in range(OLLAMA_CONFIG['max_retries'] + 1):
         try:
@@ -826,8 +848,9 @@ Your ENTIRE response must be this JSON and nothing else. Start with {{ end with 
 
                     ai_result = _parse_ai_response(content, symbol)
                     if ai_result:
+                        ai_result['source'] = 'AI Analysis (Ollama)'
                         ai_result['market_cap'] = market_data.get('market_cap')
-                        logger.info(f"  AI analysis for {symbol}: {ai_result['recommendation']} "
+                        logger.info(f"  Ollama analysis for {symbol}: {ai_result['recommendation']} "
                                    f"(confidence: {ai_result['confidence']}, "
                                    f"target: ${ai_result.get('target_price', 'N/A')})")
                         return ai_result
@@ -843,8 +866,140 @@ Your ENTIRE response must be this JSON and nothing else. Start with {{ end with 
         except Exception as e:
             logger.warning(f"  Ollama error for {symbol}: {str(e)[:80]}")
 
-    logger.warning(f"  AI analysis failed for {symbol} after {OLLAMA_CONFIG['max_retries']+1} attempts, using fallback")
+    logger.warning(f"  Ollama analysis failed for {symbol} after {OLLAMA_CONFIG['max_retries']+1} attempts, using fallback")
     return get_ai_fallback_data(symbol, market_data)
+
+async def get_finnhub_news_async(session, symbol):
+    """Fetch recent company news headlines from Finnhub (60 calls/min free tier)."""
+    finnhub_api_key = os.getenv('FINNHUB_IO_API_KEY')
+    if not finnhub_api_key or finnhub_api_key == 'your_finnhub_api_key_here':
+        return []
+    try:
+        from_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+        to_date = datetime.now().strftime('%Y-%m-%d')
+        url = (f"https://finnhub.io/api/v1/company-news?symbol={symbol}"
+               f"&from={from_date}&to={to_date}&token={finnhub_api_key}")
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+            if response.status == 200:
+                news = await response.json()
+                return [a.get('headline', '') for a in news[:3] if a.get('headline')]
+    except Exception as e:
+        logger.debug(f"  Finnhub news fetch failed for {symbol}: {str(e)[:50]}")
+    return []
+
+
+async def get_groq_analysis_async(session, symbol, company_name, market_data, eps_forecast, news_headlines=None):
+    """Get AI-powered stock analysis from Groq API (OpenAI-compatible, no extra dependencies)."""
+    prompt_data = _build_ai_prompt_data(symbol, company_name, market_data, eps_forecast, news_headlines)
+
+    system_prompt = """You are an objective senior equity research analyst. You give balanced, evidence-based recommendations.
+Your job is to weigh both bull and bear cases fairly and recommend what the data actually supports — Buy, Hold, or Sell.
+CRITICAL: Your entire response must be a single JSON object. Do NOT write any text before or after the JSON. Do NOT say "Here is" or explain anything. Start your response with { and end with }."""
+
+    user_prompt = f"""Analyze {symbol} ({company_name}) ahead of their upcoming earnings report.
+
+MARKET DATA:
+{prompt_data}
+
+INSTRUCTIONS - Follow these steps IN ORDER before giving your recommendation:
+
+STEP 1 - FUNDAMENTAL ANALYSIS:
+- Is the company profitable? Check profit margins and EPS.
+- Are margins improving or declining? Compare operating/gross margins to sector norms.
+- Is revenue growing or shrinking?
+- Is the valuation reasonable relative to growth? High P/E with strong growth can be justified; high P/E with no growth is a concern.
+- Check debt/equity and current ratio for financial health.
+
+STEP 2 - TECHNICAL ANALYSIS:
+- Compare current price to 50-day and 200-day moving averages. Above both = bullish trend; below both = bearish trend.
+- Where is price relative to 52-week high/low? Near the high = momentum; near the low = potential value or downtrend.
+- What does the 30-day trend show?
+- Check beta for volatility.
+
+STEP 3 - BEAR CASE (specific risks based on the data):
+- What could go wrong? Use actual numbers.
+
+STEP 4 - BULL CASE (specific strengths based on the data):
+- What supports a positive outlook? Use actual numbers.
+
+STEP 5 - COMPANY & INDUSTRY CONTEXT (draw on your training knowledge, not just the numbers above):
+- What is this company's core business and competitive moat?
+- What sector tailwinds or headwinds are most relevant right now (AI adoption, rate sensitivity, regulation, competition, disruption)?
+- Does this company have pricing power, or is it a commodity player?
+- How does its strategic position affect the risk/reward of THIS earnings event specifically?
+
+STEP 6 - VERDICT:
+- Weigh all factors — data AND strategic context.
+- Set target_price based on fundamentals and technicals. Use 52-week range and moving averages as anchors.
+- For reasoning: write 2 sharp sentences combining the key data signal with a company-specific strategic insight. AVOID generic phrases like "strong margins" or "good fundamentals" — say WHY it matters for THIS company at THIS moment.
+
+Your ENTIRE response must be this JSON and nothing else. Start with {{ end with }}:
+{{"recommendation": "<Strong Buy|Buy|Hold|Sell|Strong Sell>", "confidence": "<High|Medium|Low>", "target_price": <number>, "reasoning": "<2 sharp sentences: key data signal + company-specific strategic insight. No generic phrases.>"}}"""
+
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {GROQ_CONFIG['api_key']}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": GROQ_CONFIG['model'],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0,
+    }
+
+    for attempt in range(GROQ_CONFIG['max_retries'] + 1):
+        try:
+            async with session.post(url, headers=headers, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    content = result['choices'][0]['message']['content']
+                    ai_result = _parse_ai_response(content, symbol)
+                    if ai_result:
+                        GROQ_CONFIG['consecutive_429s'] = 0  # Reset circuit breaker on success
+                        ai_result['source'] = f"AI Analysis (Groq {GROQ_CONFIG['model']})"
+                        ai_result['market_cap'] = market_data.get('market_cap')
+                        logger.info(f"  Groq analysis for {symbol}: {ai_result['recommendation']} "
+                                   f"(confidence: {ai_result['confidence']}, "
+                                   f"target: ${ai_result.get('target_price', 'N/A')})")
+                        return ai_result
+                    else:
+                        logger.warning(f"  Failed to parse Groq response for {symbol}, attempt {attempt+1}")
+                elif response.status == 429:
+                    GROQ_CONFIG['consecutive_429s'] += 1
+                    if GROQ_CONFIG['consecutive_429s'] >= GROQ_CONFIG['circuit_breaker_threshold']:
+                        logger.warning(f"  Groq quota exhausted (circuit breaker). Disabling Groq for this run.")
+                        logger.warning(f"  Check quota at https://console.groq.com — daily limit resets at midnight UTC.")
+                        GROQ_CONFIG['enabled'] = False
+                        return get_ai_fallback_data(symbol, market_data)
+                    retry_after = response.headers.get('Retry-After')
+                    wait_time = int(retry_after) + 2 if retry_after else 30
+                    logger.warning(f"  Groq rate limit for {symbol}, waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+                    break  # Only retry once for 429
+                else:
+                    error_text = await response.text()
+                    logger.warning(f"  Groq returned status {response.status} for {symbol}: {error_text[:100]}")
+        except asyncio.TimeoutError:
+            logger.warning(f"  Groq timeout for {symbol}, attempt {attempt+1}")
+        except Exception as e:
+            logger.warning(f"  Groq error for {symbol}: {str(e)[:80]}")
+
+    logger.warning(f"  Groq analysis failed for {symbol} after {GROQ_CONFIG['max_retries']+1} attempts, using fallback")
+    return get_ai_fallback_data(symbol, market_data)
+
+
+async def get_ai_analysis_async(session, symbol, company_name, market_data, eps_forecast, news_headlines=None):
+    """Route AI analysis to Groq (preferred) or Ollama (fallback)."""
+    if market_data is None:
+        return get_ai_fallback_data(symbol, market_data)
+    if GROQ_CONFIG['enabled']:
+        return await get_groq_analysis_async(session, symbol, company_name, market_data, eps_forecast, news_headlines)
+    return await get_ollama_analysis_async(session, symbol, company_name, market_data, eps_forecast, news_headlines)
+
 
 async def get_real_analyst_data_async(session, symbol):
     """Get real analyst ratings, price targets, and market cap from Finnhub API (async)"""
@@ -990,6 +1145,8 @@ async def fetch_market_data(session, row, api_semaphore):
         except Exception:
             market_data = None
 
+    news_headlines = await get_finnhub_news_async(session, symbol)
+
     stock_price = market_data.get('current_price') if market_data else None
     industry = market_data.get('sector') if market_data else None
     yahoo_market_cap = market_data.get('market_cap') if market_data else None
@@ -1004,21 +1161,25 @@ async def fetch_market_data(session, row, api_semaphore):
         'industry': industry,
         'market_cap': yahoo_market_cap,
         '_market_data': market_data,  # kept for AI phase
+        '_news_headlines': news_headlines,  # kept for AI phase
     }
 
 
-async def run_ai_analysis(session, company, ollama_semaphore):
-    """Phase 2: Run AI analysis for a single pre-filtered company (sequential)."""
+async def run_ai_analysis(session, company, ai_semaphore):
+    """Phase 2: Run AI analysis for a single pre-filtered company."""
     symbol = company['symbol']
     company_name = company['company']
     market_data = company.pop('_market_data', None)
+    news_headlines = company.pop('_news_headlines', [])
     eps_parsed = company.get('eps')
 
-    async with ollama_semaphore:
-        if OLLAMA_CONFIG['enabled']:
+    async with ai_semaphore:
+        if GROQ_CONFIG['enabled'] or OLLAMA_CONFIG['enabled']:
             analyst_data = await get_ai_analysis_async(
-                session, symbol, company_name, market_data, eps_parsed
+                session, symbol, company_name, market_data, eps_parsed, news_headlines
             )
+            if GROQ_CONFIG['enabled']:
+                await asyncio.sleep(3)  # Stay within 30 RPM free tier (~20 RPM)
         else:
             analyst_data = await get_real_analyst_data_async(session, symbol)
 
@@ -1098,13 +1259,15 @@ async def get_nasdaq_earnings_async(target_date=None):
                         logger.info(f"  Fetched logos for {logo_count}/{len(filtered_data)} filtered companies")
 
                         # --- PHASE 2: AI analysis ONLY for filtered companies (sequential, slow) ---
-                        if OLLAMA_CONFIG['enabled']:
-                            logger.info(f"\n🤖 Running AI analysis on {len(filtered_data)} filtered companies ({OLLAMA_CONFIG['model']})...")
+                        if GROQ_CONFIG['enabled']:
+                            logger.info(f"\n🤖 Running Groq analysis on {len(filtered_data)} filtered companies ({GROQ_CONFIG['model']})...")
+                        elif OLLAMA_CONFIG['enabled']:
+                            logger.info(f"\n🤖 Running Ollama analysis on {len(filtered_data)} filtered companies ({OLLAMA_CONFIG['model']})...")
                         else:
                             logger.info(f"\n📊 Fetching Finnhub analyst data for {len(filtered_data)} filtered companies...")
 
-                        ollama_semaphore = asyncio.Semaphore(1)
-                        ai_tasks = [run_ai_analysis(session, company, ollama_semaphore) for company in filtered_data]
+                        ai_semaphore = asyncio.Semaphore(1)
+                        ai_tasks = [run_ai_analysis(session, company, ai_semaphore) for company in filtered_data]
 
                         ai_start = time.time()
                         earnings_data = await asyncio.gather(*ai_tasks, return_exceptions=True)
@@ -1531,8 +1694,8 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                     <div><span style="font-size: 18px;">❓</span> No Data Available</div>
                 </div>
                 <div style="margin-top: 10px; font-size: 12px; color: #666;">
-                    * Recommendations from AI analysis (Ollama {OLLAMA_CONFIG['model']})<br>
-                    * AI analysis based on fundamental data, valuation metrics, and price trends from Yahoo Finance<br>
+                    * Recommendations from AI analysis ({'Groq ' + GROQ_CONFIG['model'] if GROQ_CONFIG['enabled'] else 'Ollama ' + OLLAMA_CONFIG['model']})<br>
+                    * AI analysis based on fundamental data, valuation metrics, price trends (Yahoo Finance) and recent news (Finnhub)<br>
                     * Target prices generated by AI model based on comprehensive market data<br>
                     * Companies are sorted by recommendation priority (Strong Buy first, Strong Sell last)
                 </div>
@@ -1545,7 +1708,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
                     <strong>This report includes only high-quality companies that meet ALL of the following criteria:</strong>
                     <div style="margin-top: 10px; line-height: 1.8;">
                         ✓ <strong>Market Cap:</strong> Minimum ${FILTER_CONFIG['min_market_cap'] / 1_000_000_000:.1f} billion (mid/large-cap stocks)<br>
-                        ✓ <strong>Analysis:</strong> AI-powered analysis using Ollama ({OLLAMA_CONFIG['model']})<br>
+                        ✓ <strong>Analysis:</strong> AI-powered analysis using {'Groq ' + GROQ_CONFIG['model'] if GROQ_CONFIG['enabled'] else 'Ollama ' + OLLAMA_CONFIG['model']}<br>
                         ✓ <strong>Index Membership:</strong> Must be in S&P 500, NASDAQ 100, or Russell 2000<br>
                         ✓ <strong>Stock Price:</strong> Minimum ${FILTER_CONFIG['min_stock_price']:.2f} per share (no penny stocks)<br>
                     </div>
@@ -1557,7 +1720,7 @@ def generate_html_report(earnings_data, target_date_display=None, is_full_report
 
             <!-- Footer -->
             <div style="margin-top: 40px; padding-top: 25px; border-top: 3px solid #e9ecef; text-align: center; color: #666; font-size: 14px;">
-                <strong>📊 Data Source: NASDAQ + Yahoo Finance + Ollama AI</strong> • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
+                <strong>📊 Data Source: NASDAQ + Yahoo Finance + {'Groq AI' if GROQ_CONFIG['enabled'] else 'Ollama AI'} + Finnhub News</strong> • Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}<br>
                 EPS = Earnings Per Share (Analyst Estimates) • Pre-Market: Before 9:30 AM • After Hours: After 4:00 PM<br>
                 <br>
                 <strong>Earnings Report v{VERSION}</strong><br>
@@ -1910,8 +2073,26 @@ def validate_config():
     if service == 'gmail' and not EMAIL_CONFIG['sender_password']:
         errors.append("SENDER_PASSWORD is required when using Gmail service")
 
-    # Validate Ollama connectivity if enabled
-    if OLLAMA_CONFIG['enabled']:
+    # Configure Groq if API key is present (takes priority over Ollama)
+    if GROQ_CONFIG['api_key']:
+        try:
+            resp = requests.get(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {GROQ_CONFIG['api_key']}"},
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                GROQ_CONFIG['enabled'] = True
+                OLLAMA_CONFIG['enabled'] = False  # Groq takes priority
+                logger.info(f"  Groq API connected: {GROQ_CONFIG['model']}")
+            else:
+                logger.warning(f"  Groq API key invalid (HTTP {resp.status_code}). Falling back to Ollama.")
+        except Exception as e:
+            logger.warning(f"  Cannot connect to Groq API: {e}. Falling back to Ollama.")
+            GROQ_CONFIG['enabled'] = False
+
+    # Validate Ollama connectivity only if Groq is not available
+    if not GROQ_CONFIG['enabled'] and OLLAMA_CONFIG['enabled']:
         try:
             resp = requests.get(f"{OLLAMA_CONFIG['base_url']}/api/tags", timeout=5)
             if resp.status_code == 200:

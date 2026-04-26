@@ -87,9 +87,11 @@ EMAIL_SERVICE=gmail
 SENDER_EMAIL=your-email@gmail.com
 SENDER_PASSWORD=<16-char-app-password>
 RECIPIENTS=email1@example.com,email2@example.com
-FINNHUB_IO_API_KEY=your-api-key      # fallback when Ollama unavailable
+FINNHUB_IO_API_KEY=your-api-key      # fallback when Ollama unavailable; also used for news enrichment
 LOGO_DEV_TOKEN=your-key              # optional
-OLLAMA_MODEL=llama3.1:8b             # optional, default shown
+GROQ_API_KEY=your-key                # optional; if set, Groq is used instead of Ollama (free at console.groq.com)
+GROQ_MODEL=llama-3.3-70b-versatile   # optional, default shown
+OLLAMA_MODEL=llama3.1:8b             # optional, default shown (used only when GROQ_API_KEY not set)
 OLLAMA_BASE_URL=http://localhost:11434 # optional, default shown
 ```
 
